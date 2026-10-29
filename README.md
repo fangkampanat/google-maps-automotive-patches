@@ -2,7 +2,7 @@
 
 Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 7.2.2](https://github.com/MorpheApp/MicroG-RE/releases/tag/7.2.2).
 
-[DL Test APK](https://tryy.cc/byd), PIN: 344993
+[Test APK](https://tryy.cc/byd), PIN: 344993
 
 ![Maps Car in split screen on a BYD Dolphin: route preview to Nakhon Ratchasima showing "Arrive with 29%", next to MicroG-RE 7.2.2](docs/gmaps-cars-byd.webp)
 
@@ -38,14 +38,7 @@ Other BYD models, DiLink 5 and Android 11 to 15 are untested. On other BYD model
 ## Requirements
 
 - [Morphe Desktop](https://github.com/MorpheApp/morphe-desktop) 1.19.1 or newer, with Java 21
-- The original **Google Maps (Android Automotive) 26.10.120003.E** APK (version code `1068833413`), for example from APKMirror. Check its SHA-256:
-
-  ```text
-  03ff2f0fffe542a210ac919b48f7ffd52bd6024c69f9f550c5b9bfc652c577df
-  ```
-
-  The patch also tries other Automotive versions and stops if it cannot find its hooks, but only 26.10.120003.E is tested.
-
+- The original **Google Maps (Android Automotive) 26.10.120003.E** APK (version code `1068833413`), for example from APKMirror. Other Automotive versions may patch, but only this one is tested.
 - An ARM64 BYD head unit with Android 10 or newer, 4 KiB memory pages and ADB access
 
 ## Install
@@ -57,6 +50,7 @@ Other BYD models, DiLink 5 and Android 11 to 15 are untested. On other BYD model
    ```
 
    Turn OFF **MicroG RE** in BYD's **Disable Autostart**, then open it, grant its permissions and sign in. For Send to car, turn on **Cloud messaging**.
+   For voice guidance, install [Google TTS for MicroG-RE](https://github.com/fangkampanat/google-tts-microg) and download your voices.
 2. In Morphe Desktop, add this repository as a **Remote** source, make it active and turn off other sources for Google Maps:
 
    ```text
