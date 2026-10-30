@@ -29,6 +29,12 @@
  * no API 33 package query (Android 10 target, avoids R8 API outlines), process name added.
  * Moved to the mapsautomotive package because extension library 2.0.0 ships its own
  * app.morphe.extension.shared.patches.CrashLogPatch (Activity based).
+ * Maps Car 0.1.1: installed earlier, from the Application's attachBaseContext through SafeMode;
+ * after writing the file it records the crash for safe mode, posts a notification that opens the
+ * problem report, and the file names the features that were running.
+ * Maps Car 0.1.1: the private copy also holds the crashing process's warning and error lines
+ * from logcat (ReportLogcat); the header names the BYD model, firmware, screen and locale; native
+ * crashes found later in the crash log get a file of their own (NativeCrashes).
  */
 
 package app.morphe.extension.mapsautomotive.patches;
@@ -42,12 +48,17 @@ import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
+import android.content.res.Configuration;
+import android.content.res.Resources;
+import android.graphics.Point;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.os.Looper;
 import android.os.Process;
 import android.provider.MediaStore;
+import android.view.Display;
+import android.view.WindowManager;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
@@ -65,6 +76,7 @@ import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
 
@@ -104,6 +116,23 @@ public final class CrashLogPatch {
      * Injection point. Called from Application.onCreate in every process of the app.
      */
     public static void setUncaughtExceptionHandler(Context context) {
+        installHandler(context.getApplicationContext() != null ? context.getApplicationContext() : context);
+
+        // The in-app problem report: its log file and, in the main process, its uploader.
+        try {
+            Context appContext = context.getApplicationContext() != null ? context.getApplicationContext() : context;
+            ReportLog.start(appContext);
+            ReportPatch.onAppStart(appContext);
+        } catch (Throwable ex) {
+            Logger.printException(() -> "problem report start failure", ex);
+        }
+    }
+
+    /**
+     * Installs the process-wide handler once. SafeMode calls this first, from the Application's
+     * attachBaseContext with the base context, so crashes in Maps' content providers are caught too.
+     */
+    static void installHandler(Context appContext) {
         try {
             // The handler is process wide.
             if (handlerInstalled) {
@@ -111,9 +140,6 @@ public final class CrashLogPatch {
             }
             handlerInstalled = true;
 
-            Context appContext = context.getApplicationContext() != null
-                    ? context.getApplicationContext()
-                    : context;
             Thread.UncaughtExceptionHandler originalHandler = Thread.getDefaultUncaughtExceptionHandler();
 
             Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
@@ -127,6 +153,16 @@ public final class CrashLogPatch {
                             // The crash log comes first.
                         }
                         String toastMessage = writeCrashLog(appContext, thread, throwable);
+                        // Safe mode counts the crash; the notification opens the problem report. Never for
+                        // the report screen's own process, which cannot reopen itself.
+                        try {
+                            if (!SafeMode.isReportProcess()) {
+                                boolean safeModeStarts = SafeMode.recordCrash(appContext);
+                                ReportNotice.crash(appContext, safeModeStarts);
+                            }
+                        } catch (Throwable ignored) {
+                            // The crash log is written.
+                        }
                         showToastAndWait(appContext, toastMessage);
                     }
                 } catch (Throwable ex) {
@@ -143,15 +179,6 @@ public final class CrashLogPatch {
         } catch (Exception ex) {
             Logger.printException(() -> "setUncaughtExceptionHandler failure", ex);
         }
-
-        // The in-app problem report: its log file and, in the main process, its uploader.
-        try {
-            Context appContext = context.getApplicationContext() != null ? context.getApplicationContext() : context;
-            ReportLog.start(appContext);
-            ReportPatch.onAppStart(appContext);
-        } catch (Throwable ex) {
-            Logger.printException(() -> "problem report start failure", ex);
-        }
     }
 
     /**
@@ -159,13 +186,21 @@ public final class CrashLogPatch {
      */
     private static String writeCrashLog(Context context, Thread thread, Throwable throwable) throws IOException {
         Date now = new Date();
-        String fileTimestamp = formatUtc("yyyy-MM-dd_HH-mm-ss", now);
-        String fileName = "crash_" + context.getPackageName() + "_" + fileTimestamp + ".txt";
-        byte[] contents = buildCrashLog(context, now, thread, throwable).getBytes(StandardCharsets.UTF_8);
+        String fileName = crashFileName(context, now.getTime(), "");
+        String text = buildCrashLog(context, now, thread, throwable);
+        byte[] contents = text.getBytes(StandardCharsets.UTF_8);
 
-        // A private copy for the in-app problem report, which cannot read the public file back after a reinstall.
+        // A private copy for the in-app problem report, which cannot read the public file back after a
+        // reinstall. Only this copy holds the process's logcat lines: they are redacted and shown
+        // before a report is sent, while the public file is not.
         try {
-            ReportStore.saveCrash(context, fileName, contents);
+            StringBuilder copy = new StringBuilder(text);
+            List<String> logcat = ReportLogcat.processTail(Process.myPid());
+            if (!logcat.isEmpty()) {
+                copy.append(ReportLogcat.MARKER);
+                for (String line : logcat) copy.append(line).append('\n');
+            }
+            ReportStore.saveCrash(context, fileName, copy.toString().getBytes(StandardCharsets.UTF_8), now.getTime());
         } catch (Throwable ex) {
             Logger.printException(() -> "crash copy failure", ex);
         }
@@ -295,20 +330,33 @@ public final class CrashLogPatch {
         return format.format(date);
     }
 
-    private static String buildCrashLog(Context context, Date time, Thread thread, Throwable throwable) {
-        StringWriter stackTrace = new StringWriter();
-        throwable.printStackTrace(new PrintWriter(stackTrace));
+    /** crash_[package]_[UTC time][suffix].txt; the names sort by time. */
+    static String crashFileName(Context context, long time, String suffix) {
+        return "crash_" + context.getPackageName() + "_" + formatUtc("yyyy-MM-dd_HH-mm-ss", new Date(time)) + suffix + ".txt";
+    }
 
-        String crashLog = "Morphe crash log\n\n"
+    // The lines every crash file starts with, up to the process.
+    private static String header(Context context, String title, Date time) {
+        return title + "\n\n"
                 + "Time: " + formatUtc("yyyy-MM-dd HH:mm:ss.SSS", time) + " UTC\n"
                 + "App: " + context.getPackageName() + " " + getInstalledVersion(context, context.getPackageName()) + "\n"
                 + "Patches: " + Utils.getPatchesReleaseVersion() + "\n"
                 + "Manager: " + getInstalledVersion(context, MANAGER_PACKAGE_NAME) + "\n"
                 + "MicroG: " + getInstalledVersion(context, MICROG_PACKAGE_NAME) + "\n"
                 + "Device: " + Build.MANUFACTURER + " " + Build.MODEL + " (" + Build.DEVICE + ")\n"
-                + "Android: " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")\n"
+                + "Android: " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + "), build " + Build.DISPLAY + "\n"
                 + "ABIs: " + Arrays.toString(Build.SUPPORTED_ABIS) + "\n"
+                + "Car: " + BydBatteryPatch.describeCar() + "\n"
+                + "Screen: " + describeScreen(context) + "\n";
+    }
+
+    private static String buildCrashLog(Context context, Date time, Thread thread, Throwable throwable) {
+        StringWriter stackTrace = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(stackTrace));
+
+        String crashLog = header(context, "Morphe crash log", time)
                 + "Process: " + Application.getProcessName() + " (" + (Process.is64Bit() ? "64-bit" : "32-bit") + ")\n"
+                + "Maps Car features: " + SafeMode.describe() + "\n"
                 + "RAM: " + getRamInfo(context) + "\n"
                 + "Heap: " + getHeapInfo() + "\n"
                 + "Thread: " + thread.getName() + "\n"
@@ -320,6 +368,45 @@ public final class CrashLogPatch {
         }
 
         return crashLog;
+    }
+
+    /** A native crash read from the crash log at a later start; only a private copy is written. */
+    static String buildNativeCrashLog(Context context, ReportLogcat.NativeCrash crash) {
+        StringBuilder text = new StringBuilder(header(context,
+                "Morphe crash log (native crash, read from the crash log afterwards)", new Date(crash.time)))
+                .append("Process: ").append(crash.process != null ? crash.process : "unknown")
+                .append(crash.mainProcess ? " (main)" : "").append('\n')
+                .append("Maps Car features now: ").append(SafeMode.describe()).append('\n')
+                .append("Thread: ").append(crash.thread != null ? crash.thread : "unknown").append('\n')
+                .append("Signal: ").append(crash.signal).append('\n')
+                .append("\nCrash log lines:\n");
+        for (String line : crash.lines) text.append(line).append('\n');
+        return text.toString();
+    }
+
+    /** "1920x1080 px, 240 dpi, landscape, smallest width 864 dp, normal mode, day; locale th-TH". */
+    static String describeScreen(Context context) {
+        StringBuilder text = new StringBuilder();
+        try {
+            WindowManager windows = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+            Display display = windows == null ? null : windows.getDefaultDisplay();
+            if (display != null) {
+                Point size = new Point();
+                display.getRealSize(size);
+                text.append(size.x).append('x').append(size.y).append(" px, ");
+            }
+            // The system's configuration: this app's own density is UI density's choice.
+            Configuration system = Resources.getSystem().getConfiguration();
+            text.append(system.densityDpi).append(" dpi, ")
+                    .append(system.orientation == Configuration.ORIENTATION_PORTRAIT ? "portrait" : "landscape")
+                    .append(", smallest width ").append(system.smallestScreenWidthDp).append(" dp, ")
+                    .append(ReportBuilder.uiModeType(system)).append(" mode, ")
+                    .append(ReportBuilder.night(system) ? "night" : "day")
+                    .append("; locale ").append(context.getResources().getConfiguration().getLocales().get(0).toLanguageTag());
+        } catch (RuntimeException error) {
+            text.append("unreadable");
+        }
+        return text.toString();
     }
 
     private static String getRamInfo(Context context) {

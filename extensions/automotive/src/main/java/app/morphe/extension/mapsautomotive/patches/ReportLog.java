@@ -32,8 +32,8 @@ import java.util.concurrent.Executors;
 final class ReportLog {
     /** The tags of the extension's classes, which call this class instead of android.util.Log. */
     static final String[] TAGS = {"MorpheApiCompat", "MorpheBydBattery", "MorpheBydBands", "MorpheBydModel",
-            "MorpheLocationLockout", "MorpheLocationService", "MorpheReport", "MorpheSendToCar", "MorpheTtsWarmup",
-            "MorpheUiDensity", "MorpheWindow"};
+            "MorpheLocationLockout", "MorpheLocationService", "MorpheReport", "MorpheSafeMode", "MorpheSendToCar",
+            "MorpheTtsWarmup", "MorpheUiDensity", "MorpheWatchdog", "MorpheWindow"};
     private static final long MAX_FILE_BYTES = 256 * 1024;
     private static final int MAX_LINE_CHARS = 1024, STACK_FRAMES = 5, CAUSE_FRAMES = 2, MAX_CAUSES = 3, MAX_PENDING = 500;
     private static final String CURRENT = "0.txt", PREVIOUS = "1.txt";
@@ -66,6 +66,24 @@ final class ReportLog {
     static void w(String tag, String message, Throwable error) {
         Log.w(tag, message, error);
         add('W', tag, message, error);
+    }
+
+    /** A stack that is not a throwable's, such as a stuck thread's: its first [max] frames as trace lines. */
+    static void w(String tag, String message, StackTraceElement[] stack, int max) {
+        StringBuilder text = new StringBuilder(message);
+        for (int i = 0; i < Math.min(max, stack.length); i++) text.append("\n\tat ").append(stack[i]);
+        Log.w(tag, text.toString());
+        try {
+            long now = System.currentTimeMillis();
+            synchronized (lock) {
+                if (pending.size() >= MAX_PENDING) return;
+                pending.add(line(TIME.format(new Date(now)) + "Z W " + tag + ": " + oneLine(message)));
+                for (int i = 0; i < Math.min(max, stack.length); i++) pending.add(line("\tat " + stack[i]));
+                schedule();
+            }
+        } catch (RuntimeException ignored) {
+            // Logging never fails the caller.
+        }
     }
 
     /** From Application.onCreate in each process: the files folder, and the lines waiting for it. */

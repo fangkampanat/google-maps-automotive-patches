@@ -1,11 +1,12 @@
 package app.morphe.patches.mapsautomotive
 
-import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.patch.BytecodePatchContext
 import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.resource.ResourceType
 import app.morphe.patcher.resource.resourceId
 import app.morphe.patcher.util.getFreeRegisterProvider
+import app.morphe.patcher.util.smali.ExternalLabel
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
@@ -22,7 +23,9 @@ import java.util.logging.Logger
 // logging VE, subtitle) is wrapped in a list item and added to a list builder; About & help is the
 // last row. A "UI density" row is built the same way, with About's row and item types, VE and
 // builder, right before About. Required: without the row the density cannot be changed.
-// "BYD battery" and "Report a problem" rows follow it, built the same way.
+// "BYD battery" (when its patch is included) and "Report a problem" rows follow it, built the same way.
+// The rows are skipped while SafeMode turns them off, so a tester can check whether they break
+// Maps' Settings on a car.
 
 private const val CONTEXT_GET_STRING = "Landroid/content/Context;->getString(I)Ljava/lang/String;"
 private const val CHAR_SEQUENCE = "Ljava/lang/CharSequence;"
@@ -118,10 +121,9 @@ private fun aboutRow(method: Method, aboutTitle: Long): AboutRow {
     )
 }
 
-// The extension classes whose getSettingsTitle/Summary/Action build one row each, in this order.
-private val settingsRowClasses = listOf(UI_DENSITY_CLASS, BYD_BATTERY_CLASS, REPORT_CLASS)
-
-internal fun BytecodePatchContext.addSettingsRows() {
+// [settingsRowClasses]: the extension classes whose getSettingsTitle/Summary/Action build one row each,
+// in this order.
+internal fun BytecodePatchContext.addSettingsRows(settingsRowClasses: List<String>) {
     val settingsTitle = resourceId(ResourceType.STRING, "CAR_SETTINGS_TITLE")
     val aboutTitle = resourceId(ResourceType.STRING, "CAR_ABOUT_AND_HELP")
 
@@ -172,12 +174,16 @@ internal fun BytecodePatchContext.addSettingsRows() {
     val builder = if (about.builderRegister < 16) about.builderRegister else free.getFreeRegister4Bit()
     val kindConst = if (about.itemKind in -8..7) "const/4" else "const/16"
     val add = if (about.addOpcode == Opcode.INVOKE_INTERFACE) "invoke-interface" else "invoke-virtual"
+    val afterRows = instructions[insertAt]
 
-    method.addInstructions(
+    method.addInstructionsWithLabels(
         insertAt,
         buildString {
             if (context != about.contextRegister) appendLine("move-object/from16 v$context, v${about.contextRegister}")
             if (builder != about.builderRegister) appendLine("move-object/from16 v$builder, v${about.builderRegister}")
+            appendLine("invoke-static { v$context }, $SAFE_MODE_CLASS->settingsRows(Landroid/content/Context;)Z")
+            appendLine("move-result v$value")
+            appendLine("if-eqz v$value, :morphe_settings_rows_end")
             settingsRowClasses.forEach { extension ->
                 appendLine("invoke-static { v$context }, $extension->getSettingsTitle(Landroid/content/Context;)Ljava/lang/String;")
                 appendLine("move-result-object v$title")
@@ -199,9 +205,11 @@ internal fun BytecodePatchContext.addSettingsRows() {
                 appendLine("$add { v$builder, v$title }, ${about.add}")
             }
         }.trimEnd(),
+        ExternalLabel("morphe_settings_rows_end", afterRows),
     )
     settingsLogger.info(
-        "Added ${settingsRowClasses.size} rows (UI density, BYD battery, Report a problem) to Settings $screen at $insertAt " +
+        "Added ${settingsRowClasses.size} rows (${settingsRowClasses.joinToString { it.substringAfterLast('/').removeSuffix(";") }}) " +
+            "behind SafeMode.settingsRows to Settings $screen at $insertAt " +
             "(About at ${about.start}; row ${about.rowInit.definingClass}, item ${about.itemInit.definingClass} " +
             "kind ${about.itemKind}, VE ${about.veField})",
     )

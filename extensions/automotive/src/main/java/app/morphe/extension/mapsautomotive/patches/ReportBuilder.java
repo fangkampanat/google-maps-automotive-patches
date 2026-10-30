@@ -4,6 +4,7 @@ import android.app.ActivityManager;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Point;
 import android.os.Build;
@@ -34,13 +35,17 @@ import app.morphe.extension.shared.Utils;
 
 /**
  * Builds a problem report, schema 1: the app, MicroG-RE, the device, the BYD model, BYD battery and
- * window state, Maps Car's own logs of the last 3 days, up to three crash files and, at Send, the
- * comment and the consent. Every string is redacted ({@link ReportRedactor}) before the preview, and
+ * window state (from the main process), safe mode and the feature switches, Maps Car's own logs of the
+ * last 3 days, up to three different crash files (with their process's logcat warnings and errors from
+ * 0.1.1) and an index of all crashes, and, at Send, the comment and the consent. Every string is redacted ({@link ReportRedactor}) before the preview, and
  * the body is cut to the size limit before the preview too, so the preview shows what is sent. Runs
  * off the main thread; reads only state the extension already holds, never the car again.
  */
 final class ReportBuilder {
-    static final int SCHEMA = 1, CONSENT_TEXT_VERSION = 1, MAX_COMMENT_CHARS = 2000;
+    static final int SCHEMA = 1, CONSENT_TEXT_VERSION = 3, MAX_COMMENT_CHARS = 2000;
+    /** The main process's last battery and window state is saved at most this often, except on a window change. */
+    private static final long SNAPSHOT_EVERY_MS = 60 * 1000;
+    private static long snapshotAt;
     private static final int MAX_LOG_LINES = 2000, LOG_BUDGET_BYTES = 320 * 1024, PROCESS_BUDGET_BYTES = 16 * 1024,
             MAX_LINE_CHARS = 1024, SHORT = 256;
     // A cut crash file: its start and end with "\n…\n" between, 49,152 characters in all.
@@ -50,6 +55,14 @@ final class ReportBuilder {
     private static final int COMMENT_RESERVE_BYTES = 8 * 1024;
     private static final long LOG_WINDOW_MS = 3 * ReportStore.DAY_MS;
     private static final String PROVIDER_PACKAGE = "app.revanced.android.gms";
+    /**
+     * Apps that may get in the way: stock Maps, phone Patched Maps, the prior-art AAOS build and Google
+     * Play services. Android 11+ hides them unless declared, so null means not installed or not visible.
+     * Google Play services' name is joined at run time: the patch rewrites that exact string everywhere
+     * in the APK to MicroG-RE's package (a literal would report MicroG-RE under this name).
+     */
+    private static final String[] OTHER_PACKAGES = {"com.google.android.apps.maps", "app.morphe.android.apps.maps",
+            "com.google.android.apps.maps.automotive", String.join(".", "com", "google", "android", "gms")};
 
     private ReportBuilder() {
     }
@@ -85,7 +98,13 @@ final class ReportBuilder {
     }
 
     static Draft build(Context context, Screen screen) throws JSONException {
+        // A native crash since the last check becomes a crash copy first.
+        NativeCrashes.check(context, false);
+        SafeMode.refresh(context);
         String crash = ReportStore.pendingCrash(context);
+        // The report screen's process holds no battery or window state; the main process's last one is used.
+        boolean reportProcess = SafeMode.isReportProcess();
+        JSONObject snapshot = reportProcess ? ReportStore.snapshot(context) : null;
         JSONObject report = new JSONObject();
         report.put("schema", SCHEMA)
                 .put("created_at", formatUtc(System.currentTimeMillis()))
@@ -94,11 +113,15 @@ final class ReportBuilder {
                 .put("app", app(context))
                 .put("provider", provider(context))
                 .put("device", device(context))
+                .put("setup", setup(context))
                 .put("byd", orNull(BydBatteryPatch.reportByd(context)))
-                .put("battery", BydBatteryPatch.reportBattery(context))
-                .put("ui", ui(context, screen))
+                .put("battery", !SafeMode.included(SafeMode.BYD_BATTERY) ? JSONObject.NULL
+                        : reportProcess ? fromSnapshot(snapshot, "battery") : BydBatteryPatch.reportBattery(context))
+                .put("ui", reportProcess ? fromSnapshot(snapshot, "ui") : ui(context, screen))
+                .put("safe_mode", SafeMode.report(context))
                 .put("logs", logs())
                 .put("crashes", crashes(context))
+                .put("crash_index", ReportStore.crashIndex(context))
                 .put("comment", JSONObject.NULL);
         ReportRedactor redactor = new ReportRedactor();
         redact(report, redactor);
@@ -171,6 +194,38 @@ final class ReportBuilder {
         }
     }
 
+    /**
+     * From the main process: its BYD battery and window state for reports built in the report screen's
+     * process. At most once a minute, unless [now] (a window change); written off the calling thread.
+     */
+    static void saveSnapshot(Context context, boolean now) {
+        long time = SystemClock.elapsedRealtime();
+        synchronized (ReportBuilder.class) {
+            if (!now && snapshotAt != 0 && time - snapshotAt < SNAPSHOT_EVERY_MS) return;
+            snapshotAt = time;
+        }
+        Utils.runOnBackgroundThread(() -> {
+            try {
+                Screen screen = new Screen();
+                screen.densityDpi = WindowRefreshPatch.densityDpi;
+                JSONObject snapshot = new JSONObject()
+                        .put("at", System.currentTimeMillis())
+                        .put("battery", SafeMode.included(SafeMode.BYD_BATTERY) ? BydBatteryPatch.reportBattery(context) : JSONObject.NULL)
+                        .put("ui", ui(context, screen));
+                ReportStore.saveSnapshot(context, snapshot);
+            } catch (JSONException | RuntimeException error) {
+                ReportLog.w(ReportPatch.TAG, "state for the report not saved", error);
+            }
+        });
+    }
+
+    // A section of the main process's snapshot with its age, or null.
+    private static Object fromSnapshot(JSONObject snapshot, String name) throws JSONException {
+        JSONObject section = snapshot != null ? snapshot.optJSONObject(name) : null;
+        if (section == null) return JSONObject.NULL;
+        return section.put("snapshot_age_s", Math.max(0, (System.currentTimeMillis() - snapshot.optLong("at")) / 1000));
+    }
+
     // Sections.
 
     private static JSONObject app(Context context) throws JSONException {
@@ -180,6 +235,8 @@ final class ReportBuilder {
                 .put("version_code", info != null ? info.getLongVersionCode() : 0)
                 .put("patches_version", Utils.getPatchesReleaseVersion())
                 .put("signer_sha256_16", orNull(info != null ? CrashLogPatch.getSignatureHash(info.signatures) : null))
+                .put("patches", new JSONArray(SafeMode.patchNames()))
+                .put("process", SafeMode.isReportProcess() ? "report" : "main")
                 .put("process_uptime_s", Math.max(0, (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()) / 1000));
         return app;
     }
@@ -239,7 +296,44 @@ final class ReportBuilder {
         } catch (RuntimeException ignored) {
             // Left out.
         }
+        // The system's configuration; this app's own density is UI density's choice.
+        Configuration system = Resources.getSystem().getConfiguration();
+        device.put("screen", new JSONObject()
+                .put("orientation", system.orientation == Configuration.ORIENTATION_PORTRAIT ? "portrait" : "landscape")
+                .put("smallest_width_dp", system.smallestScreenWidthDp)
+                .put("ui_mode_type", uiModeType(system))
+                .put("night", night(system)));
         return device;
+    }
+
+    static String uiModeType(Configuration configuration) {
+        switch (configuration.uiMode & Configuration.UI_MODE_TYPE_MASK) {
+            case Configuration.UI_MODE_TYPE_CAR: return "car";
+            case Configuration.UI_MODE_TYPE_NORMAL: return "normal";
+            case Configuration.UI_MODE_TYPE_TELEVISION: return "television";
+            case Configuration.UI_MODE_TYPE_DESK: return "desk";
+            default: return "other";
+        }
+    }
+
+    static boolean night(Configuration configuration) {
+        return (configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    // Other installed apps that may get in the way: version name, or null when absent or hidden.
+    private static JSONObject setup(Context context) throws JSONException {
+        JSONObject packages = new JSONObject();
+        for (String name : OTHER_PACKAGES) {
+            Object version = JSONObject.NULL;
+            try {
+                PackageInfo info = context.getPackageManager().getPackageInfo(name, 0);
+                version = info.versionName != null ? info.versionName : "installed";
+            } catch (PackageManager.NameNotFoundException | RuntimeException ignored) {
+                // Not installed, or not visible.
+            }
+            packages.put(name, version);
+        }
+        return new JSONObject().put("packages", packages);
     }
 
     private static JSONObject ui(Context context, Screen screen) throws JSONException {
@@ -252,6 +346,7 @@ final class ReportBuilder {
                 .put("multi_window", orNull(multiWindow));
         return new JSONObject()
                 .put("density_choice_dpi", orNull(UiDensityPatch.storedDensityDpi(context)))
+                .put("density_default_dpi", UiDensityPatch.defaultDensityDpi(context))
                 .put("density_applied_dpi", screen.densityDpi > 0 ? screen.densityDpi : JSONObject.NULL)
                 .put("window", window);
     }
@@ -291,6 +386,7 @@ final class ReportBuilder {
         return array;
     }
 
+    // A private copy is the crash text, then, after ReportLogcat.MARKER, its process's logcat lines.
     private static JSONArray crashes(Context context) throws JSONException {
         JSONArray crashes = new JSONArray();
         for (File file : ReportStore.crashes(context)) {
@@ -300,16 +396,26 @@ final class ReportBuilder {
             } catch (IOException error) {
                 continue;
             }
+            JSONArray logcat = new JSONArray();
+            int marker = text.indexOf(ReportLogcat.MARKER);
+            if (marker >= 0) {
+                for (String line : text.substring(marker + ReportLogcat.MARKER.length()).split("\n")) {
+                    if (!line.isEmpty()) logcat.put(line);
+                }
+                text = text.substring(0, marker);
+            }
             boolean truncated = text.length() > CRASH_MAX_CHARS;
             if (truncated) {
                 text = text.substring(0, CRASH_HEAD_CHARS) + "\n…\n" + text.substring(text.length() - CRASH_TAIL_CHARS);
             }
             crashes.put(new JSONObject()
                     .put("file_name", file.getName())
+                    .put("kind", file.getName().endsWith("_native.txt") ? "native" : "java")
                     .put("created_at", formatUtc(file.lastModified()))
                     .put("bytes_original", file.length())
                     .put("truncated", truncated)
-                    .put("text", text));
+                    .put("text", text)
+                    .put("logcat", logcat));
         }
         return crashes;
     }
@@ -337,7 +443,8 @@ final class ReportBuilder {
 
     private static String redactField(String name, String value, ReportRedactor redactor) {
         String redacted = redactor.redact(value);
-        boolean unlimited = name.equals("text") || name.equals("lines") || name.equals("process_lines") || name.equals("comment");
+        boolean unlimited = name.equals("text") || name.equals("lines") || name.equals("process_lines") || name.equals("logcat")
+                || name.equals("comment");
         return unlimited || redacted.length() <= SHORT ? redacted : redacted.substring(0, SHORT - 1) + "…";
     }
 

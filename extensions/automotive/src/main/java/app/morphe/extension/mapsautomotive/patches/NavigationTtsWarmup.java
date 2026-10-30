@@ -35,6 +35,7 @@ public final class NavigationTtsWarmup {
     }
 
     public static void warmUp(Activity activity) {
+        if (!SafeMode.on(activity, SafeMode.TTS_WARMUP)) return;
         if (!started.compareAndSet(false, true)) return;
         try {
             Context context = activity.getApplicationContext();

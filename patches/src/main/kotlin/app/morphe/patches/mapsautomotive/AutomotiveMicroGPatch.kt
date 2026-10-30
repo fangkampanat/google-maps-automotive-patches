@@ -3,6 +3,7 @@ package app.morphe.patches.mapsautomotive
 import app.morphe.patcher.Fingerprint
 import app.morphe.patcher.extensions.InstructionExtensions.addInstruction
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.patch.ApkFileType
 import app.morphe.patcher.patch.AppTarget
@@ -12,8 +13,10 @@ import app.morphe.patcher.patch.FormFactor
 import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.patch.bytecodePatch
 import app.morphe.patcher.patch.resourcePatch
+import app.morphe.patcher.util.getFreeRegisterProvider
 import app.morphe.patcher.util.getReference
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
+import app.morphe.patcher.util.smali.ExternalLabel
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.builder.BuilderInstruction
@@ -41,23 +44,25 @@ import java.util.logging.Logger
 // Own app label, Google TTS warm-up (ported from the phone patch).
 // Remaining API 30 call sites (CloseGuard, NumberFormatter percent, InstallSourceInfo) and
 // Car.createCar without android.car. UI density chosen in Maps' Settings instead of a patch option.
-// BYD battery for EV routing (BydBatteryPatch.kt), turned on in Maps' Settings.
-// Send to car (push routes below, SendToCarPatch.kt).
-// Report a problem (ReportPatch in the extension, a third Settings row).
+// Report a problem (ReportPatch in the extension): a Settings row and its own screen outside Maps,
+// with safe mode and the feature switches (SafeMode).
+// Separate patches that depend on this one: BYD battery (BydBatteryPatch.kt), Send to car
+// (SendToCarPatch.kt) and the BYD location flicker fix (LocationLockoutPatch.kt).
 
 internal const val ORIGINAL_PACKAGE_NAME = "com.google.android.apps.maps"
-private const val PATCHED_PACKAGE_NAME = "app.morphe.android.apps.maps.automotive"
+internal const val PATCHED_PACKAGE_NAME = "app.morphe.android.apps.maps.automotive"
 // Present the phone Maps certificate first; the AAOS certificate
 // (SHA-1 58e1c4133f7441ec3d2c270270a14802da47ba0e) is the fallback.
 private const val SPOOFED_CERT_SHA1 = "38918a453d07199354f8b19af05ec6562ced5788"
 private const val AAOS_CERT_SHA256 = "1975b2f17177bc89a5dff31f9e64a6cae281a53dc1d1d59b1d147fe1c82afa00"
 private const val AAOS_CERT_SHA256_ANDROID_13_PLUS = "d22cc500299fb22873a01a010de1c82fbe4d061119b94814dd301dab50cb7678"
 private const val GMS_CORE_PACKAGE_NAME = "app.revanced.android.gms"
-private const val GMS_CORE_VENDOR_GROUP = "app.revanced"
-private const val C2DM_PACKAGE_NAME = "app.revanced.android.c2dm"
+internal const val GMS_CORE_VENDOR_GROUP = "app.revanced"
+internal const val C2DM_PACKAGE_NAME = "app.revanced.android.c2dm"
 private const val MAIN_CLASS = "Lcom/google/android/maps/MapsActivity;"
+private const val MAIN_ACTIVITY_NAME = "com.google.android.maps.MapsActivity"
 private const val APPLICATION_NAME = "com.google.android.apps.gmm.car.embedded.app.EmbeddedGoogleMapsApplication"
-private const val APPLICATION_CLASS = "Lcom/google/android/apps/gmm/car/embedded/app/EmbeddedGoogleMapsApplication;"
+internal const val APPLICATION_CLASS = "Lcom/google/android/apps/gmm/car/embedded/app/EmbeddedGoogleMapsApplication;"
 private const val INPUT_MIN_SDK = "30"
 private const val OUTPUT_MIN_SDK = "29"
 private const val AUTOMOTIVE_FEATURE = "android.hardware.type.automotive"
@@ -67,6 +72,13 @@ private const val UTILS_CLASS = "Lapp/morphe/extension/shared/Utils;"
 private const val CRASH_LOG_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/CrashLogPatch;"
 internal const val UI_DENSITY_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/UiDensityPatch;"
 internal const val REPORT_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/ReportPatch;"
+internal const val SAFE_MODE_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/SafeMode;"
+// The report screen: its own process, where Maps' start is skipped, and a launcher entry.
+// The names and the process suffix must match ReportActivity and SafeMode in the extension.
+private const val REPORT_ACTIVITY = "app.morphe.extension.mapsautomotive.patches.ReportActivity"
+private const val REPORT_LAUNCHER = "app.morphe.extension.mapsautomotive.patches.ReportLauncher"
+private const val REPORT_PROCESS = ":morphe_report"
+private const val REPORT_LABEL = "Maps Car report"
 private const val LOCATION_SERVICE_CLASS =
     "Lapp/morphe/extension/mapsautomotive/patches/LocationServicePatch;"
 private const val LOCATION_SERVICE_ACTION =
@@ -99,7 +111,7 @@ internal val compatibility = Compatibility(
     formFactor = FormFactor.AUTOMOTIVE,
 )
 
-private val manifestPatch = resourcePatch {
+internal val manifestPatch = resourcePatch {
     execute {
         document("AndroidManifest.xml").use { document ->
             patchManifest(document)
@@ -107,11 +119,23 @@ private val manifestPatch = resourcePatch {
     }
 }
 
+// What the separate patches add while the patches execute; the core uses it in its finalize, which
+// runs after all of them: their Settings rows and the switchable features this APK contains.
+internal object IncludedFeatures {
+    val settingsRows = mutableListOf<String>()
+    val features = mutableListOf<String>()
+
+    fun reset() {
+        settingsRows.clear()
+        features.clear()
+    }
+}
+
 @Suppress("unused")
 val automotiveMicroGPatch = bytecodePatch(
     name = "Google Maps Automotive for MicroG-RE",
     description = "Runs Google Maps for Android Automotive on Android 10 as \"$APP_LABEL\" with MicroG-RE 7.2.2. " +
-        "Adds UI density and BYD battery (EV) settings and Send to car.",
+        "Adds a UI density setting, a problem report and a safe mode.",
     default = true,
 ) {
     compatibleWith(compatibility)
@@ -119,6 +143,9 @@ val automotiveMicroGPatch = bytecodePatch(
     extendWith("extensions/automotive.mpe")
 
     execute {
+        // The separate patches execute after this one, which they depend on.
+        IncludedFeatures.reset()
+        IncludedFeatures.settingsRows += UI_DENSITY_CLASS
         rewriteGmsCoreStrings()
         patchLocationServiceAction()
         patchExtensionRuntime()
@@ -136,12 +163,12 @@ val automotiveMicroGPatch = bytecodePatch(
         guardInsetsAnimationCallbackSetter()
         guardCarCreation()
         applyUiDensity()
-        startBydBattery()
-        addBydBatteryHooks()
-        delayLocationLockout()
-        addSettingsRows()
-        useOriginalPackageForChime()
-        expandSendToCarLinks()
+    }
+
+    finalize {
+        addSettingsRows(IncludedFeatures.settingsRows + REPORT_CLASS)
+        startSafeMode()
+        writeIncludedFeatures(IncludedFeatures.features)
     }
 }
 
@@ -158,14 +185,69 @@ private fun patchManifest(document: Document) {
 
     rewriteManifestAttributes(manifest, appOwnedPermissionRenames)
     validateAppOwnedPermissionRenames(document, appOwnedPermissionRenames)
-    validatePushReceiver(document)
     val movedComponents = moveToRenamedMainProcess(manifest)
     logger.info("Moved $movedComponents components from process $ORIGINAL_PACKAGE_NAME to $PATCHED_PACKAGE_NAME")
     val renamedLabels = renameAppLabels(manifest)
     logger.info("Set $renamedLabels app and chooser labels to \"$APP_LABEL\"")
     ensureQueryPackage(document, manifest)
     ensureSpoofMetadata(document)
-    addBydEnergyProvider(document, PATCHED_PACKAGE_NAME)
+    addReportActivity(document, manifest)
+}
+
+// The report screen and its launcher entry "Maps Car report", reachable when Maps' Settings or Maps
+// itself crashes. The activity runs in its own process (injectExtensionContext skips Maps' start
+// there) and its own task; launch mode and configuration changes are copied from MapsActivity, so
+// they are encoded as Maps' own are.
+private fun addReportActivity(document: Document, manifest: Element) {
+    val application = manifest.directChildren("application").single()
+    val components = application.directChildren("activity") + application.directChildren("activity-alias")
+    val taken = components.map { it.getAttribute("android:name") }.filter { it == REPORT_ACTIVITY || it == REPORT_LAUNCHER }
+    if (taken.isNotEmpty()) throw PatchException("Components already declared: ${taken.joinToString()}")
+    val mapsActivity = application.directChildren("activity").singleOrNull { it.getAttribute("android:name") == MAIN_ACTIVITY_NAME }
+        ?: throw PatchException("Expected one $MAIN_ACTIVITY_NAME")
+    val launchMode = mapsActivity.getAttribute("android:launchMode")
+    val configChanges = mapsActivity.getAttribute("android:configChanges")
+    if (launchMode.isEmpty() || configChanges.isEmpty()) {
+        throw PatchException("$MAIN_ACTIVITY_NAME has no launchMode or configChanges to copy")
+    }
+
+    application.appendChild(
+        document.createElement("activity").apply {
+            setAttribute("android:name", REPORT_ACTIVITY)
+            setAttribute("android:process", REPORT_PROCESS)
+            setAttribute("android:exported", "false")
+            setAttribute("android:taskAffinity", "$PATCHED_PACKAGE_NAME.report")
+            setAttribute("android:launchMode", launchMode)
+            setAttribute("android:configChanges", configChanges)
+            setAttribute("android:label", REPORT_LABEL)
+        },
+    )
+    // An alias must follow its target activity.
+    application.appendChild(
+        document.createElement("activity-alias").apply {
+            setAttribute("android:name", REPORT_LAUNCHER)
+            setAttribute("android:targetActivity", REPORT_ACTIVITY)
+            setAttribute("android:exported", "true")
+            setAttribute("android:label", REPORT_LABEL)
+            appendChild(
+                document.createElement("intent-filter").apply {
+                    appendChild(document.createElement("action").apply { setAttribute("android:name", "android.intent.action.MAIN") })
+                    appendChild(document.createElement("category").apply { setAttribute("android:name", "android.intent.category.LAUNCHER") })
+                },
+            )
+        },
+    )
+
+    val launchers = application.directChildren("activity-alias").count { alias ->
+        alias.getAttribute("android:targetActivity") == REPORT_ACTIVITY &&
+            alias.getElementsByTagName("category").let { categories ->
+                (0 until categories.length).any {
+                    (categories.item(it) as Element).getAttribute("android:name") == "android.intent.category.LAUNCHER"
+                }
+            }
+    }
+    if (launchers != 1) throw PatchException("Expected one launcher entry for $REPORT_ACTIVITY, found $launchers")
+    logger.info("Added $REPORT_ACTIVITY in $REPORT_PROCESS and the launcher entry \"$REPORT_LABEL\" (launchMode $launchMode)")
 }
 
 private fun requireAutomotiveInput(manifest: Element): Element {
@@ -296,8 +378,6 @@ private fun rewriteManifestAttributes(
                 name in manifestPermissionAttributes ->
                     appOwnedPermissionRenames[value] ?: value.rewriteManifestRoute()
 
-                name == "android:name" && node.tagName == "action" -> pushActionRoutes[value] ?: value
-
                 else -> value
             }
         }
@@ -393,59 +473,6 @@ private val manifestRouteReplacements = mapOf(
 private fun String.rewriteManifestRoute() =
     manifestRouteReplacements[this] ?: this
 
-// Send to car: MicroG-RE 7.2.2 serves and sends push (GCM/FCM/IID) only under its own
-// names, so Maps' token requests, the registration reply and the delivered messages need them too.
-// Without them Chime never registers the car.
-private const val PUSH_RECEIVE_ACTION = "com.google.android.c2dm.intent.RECEIVE"
-private val pushActionRoutes = mapOf(
-    "com.google.android.c2dm.intent.REGISTER" to "$C2DM_PACKAGE_NAME.intent.REGISTER",
-    "com.google.android.c2dm.intent.REGISTRATION" to "$C2DM_PACKAGE_NAME.intent.REGISTRATION",
-    PUSH_RECEIVE_ACTION to "$C2DM_PACKAGE_NAME.intent.RECEIVE",
-    "com.google.android.c2dm.intent.UNREGISTER" to "$C2DM_PACKAGE_NAME.intent.UNREGISTER",
-    "com.google.android.gcm.intent.SEND" to "$GMS_CORE_VENDOR_GROUP.android.gcm.intent.SEND",
-    "com.google.iid.TOKEN_REQUEST" to "$GMS_CORE_VENDOR_GROUP.iid.TOKEN_REQUEST",
-)
-// The token request (two ways), the registration reply and message intake; UNREGISTER and
-// gcm.intent.SEND are routed when present.
-private val requiredPushActions = listOf(
-    "com.google.android.c2dm.intent.REGISTER",
-    "com.google.iid.TOKEN_REQUEST",
-    "com.google.android.c2dm.intent.REGISTRATION",
-    PUSH_RECEIVE_ACTION,
-)
-
-// The push receiver is protected by the (renamed) c2dm SEND permission and must now listen to
-// MicroG-RE's RECEIVE action; no Google c2dm name may be left in the manifest.
-private fun validatePushReceiver(document: Document) {
-    val receivers = document.getElementsByTagName("receiver")
-    var routed = 0
-    for (index in 0 until receivers.length) {
-        val receiver = receivers.item(index) as? Element ?: continue
-        if (receiver.getAttribute("android:permission") != "$C2DM_PACKAGE_NAME.permission.SEND") continue
-        val actions = receiver.getElementsByTagName("action")
-        for (action in 0 until actions.length) {
-            if ((actions.item(action) as Element).getAttribute("android:name") == pushActionRoutes[PUSH_RECEIVE_ACTION]) routed++
-        }
-    }
-    if (routed != 1) throw PatchException("Expected one push receiver with MicroG-RE's RECEIVE action, found $routed")
-
-    val stale = mutableListOf<String>()
-    fun collect(node: Node) {
-        if (node is Element) {
-            val attributes = node.attributes
-            for (index in 0 until attributes.length) {
-                val value = attributes.item(index).nodeValue
-                if (value.startsWith("com.google.android.c2dm.") || value in pushActionRoutes) stale += value
-            }
-        }
-        val children = node.childNodes
-        for (index in 0 until children.length) collect(children.item(index))
-    }
-    collect(document.documentElement)
-    if (stale.isNotEmpty()) throw PatchException("Push names left unrouted in the manifest: ${stale.joinToString()}")
-    logger.info("Push receiver routed to MicroG-RE's RECEIVE action")
-}
-
 private fun ensureQueryPackage(document: Document, manifest: Element) {
     val queries = manifest.directChildren("queries").firstOrNull()
         ?: document.createElement("queries").also { queriesNode ->
@@ -503,7 +530,7 @@ private fun Element.setMetadata(document: Document, name: String, value: String)
     metadata.setAttribute("android:value", value)
 }
 
-private fun Element.directChildren(tagName: String): List<Element> {
+internal fun Element.directChildren(tagName: String): List<Element> {
     val result = mutableListOf<Element>()
     val children = childNodes
 
@@ -540,7 +567,6 @@ private val exactGmsRouteReplacements = mapOf(
 private fun transformString(value: String): String? {
     val transformed = exactStringReplacements[value]
         ?: exactGmsRouteReplacements[value]
-        ?: pushActionRoutes[value]
         ?: value.toRevancedContentUriRoute()
 
     return transformed.takeIf { it != value }
@@ -562,13 +588,13 @@ private fun String.toRevancedContentUriRoute(): String = when {
     else -> this
 }
 
-private fun stringReferenceOf(instruction: Any): StringReference? = when (instruction) {
+internal fun stringReferenceOf(instruction: Any): StringReference? = when (instruction) {
     is Instruction21c -> instruction.getReference<StringReference>()
     is Instruction31c -> instruction.getReference<StringReference>()
     else -> null
 }
 
-private fun replacementFor(instruction: Any, transformed: String): BuilderInstruction? = when (instruction) {
+internal fun replacementFor(instruction: Any, transformed: String): BuilderInstruction? = when (instruction) {
     is Instruction21c -> BuilderInstruction21c(
         Opcode.CONST_STRING,
         instruction.registerA,
@@ -584,8 +610,9 @@ private fun replacementFor(instruction: Any, transformed: String): BuilderInstru
     else -> null
 }
 
-private fun BytecodePatchContext.rewriteGmsCoreStrings() {
-    val pushRoutes = mutableMapOf<String, Int>()
+// Replaces each string literal [transform] maps to another value; returns how often each was replaced.
+internal fun BytecodePatchContext.replaceStringLiterals(transform: (String) -> String?): Map<String, Int> {
+    val replaced = mutableMapOf<String, Int>()
     getAllClassesWithStrings().forEach { classDef ->
         val mutableClass = mutableClassDefBy(classDef)
 
@@ -594,18 +621,19 @@ private fun BytecodePatchContext.rewriteGmsCoreStrings() {
 
             implementation.instructions.forEachIndexed { index, instruction ->
                 val original = stringReferenceOf(instruction)?.string ?: return@forEachIndexed
-                val transformed = transformString(original) ?: return@forEachIndexed
+                val transformed = transform(original) ?: return@forEachIndexed
                 val replacement = replacementFor(instruction, transformed) ?: return@forEachIndexed
 
                 method.replaceInstruction(index, replacement)
-                if (original in pushActionRoutes) pushRoutes.merge(original, 1, Int::plus)
+                replaced.merge(original, 1, Int::plus)
             }
         }
     }
-    // An unrecognized push layout (another mechanism, or none) fails instead of leaving Send to car broken.
-    val missing = requiredPushActions.filter { it !in pushRoutes }
-    if (missing.isNotEmpty()) throw PatchException("Push actions not found in Maps code: ${missing.joinToString()}")
-    logger.info("Routed push actions to MicroG-RE: $pushRoutes")
+    return replaced
+}
+
+private fun BytecodePatchContext.rewriteGmsCoreStrings() {
+    replaceStringLiterals(::transformString)
 }
 
 private fun BytecodePatchContext.patchLocationServiceAction() {
@@ -738,7 +766,7 @@ private fun BytecodePatchContext.patchExtensionRuntime() {
 
 // Search from a stable entry class upwards, including the class itself. Reject ambiguous
 // or non-instance hooks and never continue into Android framework classes.
-private fun BytecodePatchContext.findHierarchyHook(
+internal fun BytecodePatchContext.findHierarchyHook(
     startClass: String,
     label: String,
     predicate: (Method) -> Boolean,
@@ -845,19 +873,81 @@ private fun BytecodePatchContext.patchPatchesReleaseVersion() {
 }
 
 // The crash handler follows setContext and runs in every process of the app,
-// before Maps installs its own handler.
+// before Maps installs its own handler. In the report screen's process Maps' own start is skipped:
+// Maps gives any process it does not know its background start, and the report screen needs none of it.
 private fun BytecodePatchContext.injectExtensionContext() {
     val method = findHierarchyHook(APPLICATION_CLASS, "Maps application onCreate") {
         it.name == "onCreate" && it.returnType == "V" && it.parameterTypes.isEmpty()
     }
+    val code = method.implementation!!.instructions
+    val self = method.implementation!!.registerCount - 1
+    val flag = method.getFreeRegisterProvider(0, 1, self).getFreeRegister4Bit()
 
-    method.addInstructions(
+    method.addInstructionsWithLabels(
         0,
         """
             invoke-static/range { p0 .. p0 }, $UTILS_CLASS->setContext(Landroid/content/Context;)V
             invoke-static/range { p0 .. p0 }, $CRASH_LOG_CLASS->setUncaughtExceptionHandler(Landroid/content/Context;)V
+            invoke-static {}, $SAFE_MODE_CLASS->isReportProcess()Z
+            move-result v$flag
+            if-eqz v$flag, :morphe_maps_start
+            return-void
+        """.trimIndent(),
+        ExternalLabel("morphe_maps_start", code[0]),
+    )
+    logger.info("Report process: Maps' start skipped in $method (flag v$flag)")
+}
+
+// Safe mode and the feature switches are read first, at the start of the Application's
+// attachBaseContext, before BYD battery and the UI density (added at the same point by execute, so
+// this runs in finalize). It also installs the crash handler there, so crashes in Maps' content
+// providers count too.
+private fun BytecodePatchContext.startSafeMode() {
+    requireExtensionMethod(SAFE_MODE_CLASS, "attachBaseContext", listOf("Landroid/content/Context;"), "V")
+    requireExtensionMethod(SAFE_MODE_CLASS, "isReportProcess", listOf(), "Z")
+    requireExtensionMethod(SAFE_MODE_CLASS, "settingsRows", listOf("Landroid/content/Context;"), "Z")
+    findHierarchyHook(APPLICATION_CLASS, "Maps application attachBaseContext") {
+        it.name == "attachBaseContext" && it.returnType == "V" &&
+            it.parameterTypes.map { type -> type.toString() } == listOf("Landroid/content/Context;")
+    }.addInstruction(
+        0,
+        "invoke-static/range { p1 .. p1 }, $SAFE_MODE_CLASS->attachBaseContext(Landroid/content/Context;)V",
+    )
+}
+
+// Which separate patches' features this APK contains, for the report screen, the report and crash logs.
+private fun BytecodePatchContext.writeIncludedFeatures(features: List<String>) {
+    val method = mutableClassDefBy(SAFE_MODE_CLASS).methods.singleOrNull {
+        it.name == "includedFeatures" && it.returnType == "Ljava/lang/String;" && it.parameterTypes.isEmpty() &&
+            AccessFlags.STATIC.isSet(it.accessFlags) && AccessFlags.PRIVATE.isSet(it.accessFlags)
+    } ?: throw PatchException("SafeMode lacks includedFeatures")
+    val value = features.joinToString(",")
+    if (!value.matches(Regex("[a-z_,]*"))) throw PatchException("Unexpected feature names: $value")
+    method.addInstructions(
+        0,
+        """
+            const-string v0, "$value"
+            return-object v0
         """.trimIndent(),
     )
+    logger.info("Features of the separate patches in this APK: ${value.ifEmpty { "none" }}")
+}
+
+internal fun BytecodePatchContext.requireExtensionMethod(
+    className: String,
+    name: String,
+    parameters: List<String>,
+    returnType: String,
+) {
+    val extension = classDefByOrNull(className) ?: throw PatchException("Missing extension class $className")
+    if (extension.methods.none {
+            it.name == name && it.returnType == returnType &&
+                it.parameterTypes.map { type -> type.toString() } == parameters &&
+                AccessFlags.STATIC.isSet(it.accessFlags) && AccessFlags.PUBLIC.isSet(it.accessFlags)
+        }
+    ) {
+        throw PatchException("$className lacks public static $name")
+    }
 }
 
 private fun BytecodePatchContext.injectGmsCoreCheck() {
@@ -946,17 +1036,4 @@ private fun BytecodePatchContext.applyUiDensity() {
             """.trimIndent(),
         )
     }
-}
-
-// BYD battery (BydBatteryPatch.kt) is decided at the Application's attachBaseContext:
-// Maps' content providers and its onCreate run after it and may build the components that read the
-// vehicle type. It takes the base context as the Application receives it.
-private fun BytecodePatchContext.startBydBattery() {
-    findHierarchyHook(APPLICATION_CLASS, "Maps application attachBaseContext") {
-        it.name == "attachBaseContext" && it.returnType == "V" &&
-            it.parameterTypes.map { type -> type.toString() } == listOf("Landroid/content/Context;")
-    }.addInstruction(
-        0,
-        "invoke-static/range { p1 .. p1 }, $BYD_BATTERY_CLASS->attachBaseContext(Landroid/content/Context;)V",
-    )
 }

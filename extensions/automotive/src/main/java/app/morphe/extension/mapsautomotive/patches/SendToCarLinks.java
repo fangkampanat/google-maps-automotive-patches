@@ -41,6 +41,7 @@ import app.morphe.extension.shared.Utils;
 public final class SendToCarLinks {
     private static final String TAG = "MorpheSendToCar";
     private static final String SHORT_LINK_HOST = "maps.app.goo.gl";
+    private static final String ORIGINAL_PACKAGE = "com.google.android.apps.maps";
     private static final int TIMEOUT_MS = 6000;
     // A link sent from the phone a moment ago can answer 404 for a few seconds; retry for up to 15 s.
     private static final long RETRY_UNTIL_MS = 15000;
@@ -63,12 +64,21 @@ public final class SendToCarLinks {
     }
 
     /**
+     * Injection point: each package name GnpSdk puts into its registration and device-info requests.
+     * Google accepts them only under the package MicroG-RE signs Maps in as (its SPOOFED_PACKAGE_NAME);
+     * with Send to car switched off GnpSdk keeps this app's own package, as before Send to car existed.
+     */
+    public static String chimePackage(String own) {
+        return SafeMode.on(SafeMode.SEND_TO_CAR) ? ORIGINAL_PACKAGE : own;
+    }
+
+    /**
      * Injection point: just before Maps asks Dynamic Links about a maps.app.goo.gl link. Returns true
      * when this class handles the link; Maps then skips Dynamic Links.
      */
     public static boolean expand(Object processor, Intent intent, Uri referrer) {
         try {
-            if (!(processor instanceof Target) || intent == null) return false;
+            if (!(processor instanceof Target) || intent == null || !SafeMode.on(SafeMode.SEND_TO_CAR)) return false;
             String action = intent.getAction();
             if (!Intent.ACTION_VIEW.equals(action) && !"android.nfc.action.NDEF_DISCOVERED".equals(action)) return false;
             String link = intent.getDataString();

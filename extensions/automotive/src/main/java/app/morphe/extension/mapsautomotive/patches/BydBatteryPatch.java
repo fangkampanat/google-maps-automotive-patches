@@ -104,6 +104,8 @@ public final class BydBatteryPatch {
     /** The tested car's BYD model id (car settings model_value and persist.sys.vehicle_40d_code). */
     private static final int DOLPHIN_MODEL_ID = 186, MODEL_UNKNOWN = -1, MODEL_NOT_READ = Integer.MIN_VALUE;
     private static final String MODEL_PROPERTY = "persist.sys.vehicle_40d_code", CAR_SETTINGS_MODEL_KEY = "model_value";
+    /** The head unit's software version on DiLink 3 ("dilink3.0_…" on the Dolphin); a report fact only. */
+    private static final String FIRMWARE_PROPERTY = "persist.sys.gbClientVersion", VEHICLE_TYPE_PROPERTY = "ro.vehicle.type";
     private static final Uri CAR_SETTINGS = Uri.parse("content://carsettings/system_settings");
     // People and luggage above the table's mass, picked in the dialog. BYD's table masses are
     // the weight in the file name + 100 kg (81_1580/1620/1750: 1,680/1,720/1,850 kg), so they include
@@ -159,7 +161,7 @@ public final class BydBatteryPatch {
      */
     public static void attachBaseContext(Context base) {
         try {
-            if (active || base == null || !isEnabled(base) || !isByd()) return;
+            if (active || base == null || !SafeMode.on(base, SafeMode.BYD_BATTERY) || !isEnabled(base) || !isByd()) return;
             if (!base.getPackageName().equals(Application.getProcessName())) return;
             Class.forName(BYD_SDK_CLASS);
             context = base;
@@ -302,6 +304,7 @@ public final class BydBatteryPatch {
         sampleOutsideC = outsideC;
         lastSampleAt = SystemClock.elapsedRealtime();
         lastSoc = sample.soc;
+        ReportBuilder.saveSnapshot(context, false);
         // A new read also restarts the model's age that Maps sends with each request.
         notifyModelChanged();
         String source = file == null ? "source=fallback;" + model.describe()
@@ -475,6 +478,9 @@ public final class BydBatteryPatch {
     /** Injection point: the row subtitle, the current state. */
     public static String getSettingsSummary(Context context) {
         boolean thai = UiDensityPatch.isThai(context);
+        if (!SafeMode.on(context, SafeMode.BYD_BATTERY)) {
+            return thai ? "ปิดชั่วคราว · สวิตช์ใน Maps Car report" : "Off for now · switch in Maps Car report";
+        }
         if (!isEnabled(context)) {
             if (untestedByd(context)) return thai ? "ปิด · ยังไม่ได้ทดสอบกับรถรุ่นนี้" : "Off · not tested on this car model";
             return thai ? "ปิด" : "Off";
@@ -713,8 +719,10 @@ public final class BydBatteryPatch {
                         + (!untested ? "" : thai
                         ? "\n\nทดสอบแล้วเฉพาะ BYD Dolphin (DiLink 3) รถคันนี้ (" + modelText(host, true) + ") ยังไม่ได้ทดสอบ"
                         + " จึงปิดไว้ก่อน เปิดเองได้ แต่แบตที่เหลือเมื่อถึงปลายทางอาจคลาดเคลื่อน"
+                        + " ไม่รองรับรถปลั๊กอินไฮบริด (DM-i)"
                         : "\n\nTested only on a BYD Dolphin (DiLink 3). This car (" + modelText(host, false) + ") is untested,"
-                        + " so this starts off. You can turn it on, but the battery on arrival may be less accurate.")
+                        + " so this starts off. You can turn it on, but the battery on arrival may be less accurate."
+                        + " Plug-in hybrids (DM-i) are not supported.")
                         : (thai ? "Maps Car ไม่พบระบบรถ BYD จึงไม่ได้ส่งข้อมูลแบตให้ Maps ปิดได้ถ้าไม่ใช่รถ BYD"
                         : "Maps Car found no BYD vehicle system, so Maps gets no battery data. Turn this off on other cars."));
                 show(intro, true);
@@ -1263,6 +1271,34 @@ public final class BydBatteryPatch {
         }
     }
 
+    // Without a log line, for the crash handler. Null when unreadable or empty.
+    private static String quietProperty(String name) {
+        try {
+            String value = (String) Class.forName("android.os.SystemProperties").getMethod("get", String.class).invoke(null, name);
+            return value == null || value.isEmpty() ? null : value;
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    /**
+     * For crash files, from any process and the crashing thread: the BYD model id (the property, never
+     * BYD's provider), the firmware and the vehicle type. Build.MODEL names only the DiLink platform.
+     */
+    static String describeCar() {
+        try {
+            if (!isByd()) return "not a BYD";
+            int id = bydModelId != MODEL_NOT_READ ? bydModelId : parseModelId(quietProperty(MODEL_PROPERTY));
+            String firmware = quietProperty(FIRMWARE_PROPERTY), type = quietProperty(VEHICLE_TYPE_PROPERTY);
+            return "BYD, model id " + (id == MODEL_UNKNOWN ? "unknown" : Integer.toString(id))
+                    + (id == DOLPHIN_MODEL_ID ? " (the tested Dolphin)" : " (untested)")
+                    + ", firmware " + (firmware != null ? firmware : "unknown")
+                    + ", vehicle type " + (type != null ? type : "unknown");
+        } catch (RuntimeException error) {
+            return "unknown";
+        }
+    }
+
     private static int carSettingsModelId(Context context) {
         try (Cursor cursor = context.getContentResolver().query(CAR_SETTINGS, null, null, null, null)) {
             if (cursor == null) return MODEL_UNKNOWN;
@@ -1300,14 +1336,16 @@ public final class BydBatteryPatch {
     static JSONObject reportByd(Context context) throws JSONException {
         if (!isByd()) return null;
         int id = modelId(context);
-        String vehicleType = systemProperty("ro.vehicle.type");
+        String vehicleType = systemProperty(VEHICLE_TYPE_PROPERTY);
+        String firmware = quietProperty(FIRMWARE_PROPERTY);
         return new JSONObject()
                 .put("is_byd", true)
                 .put("sdk_present", hasBydSdk())
                 .put("model_id", id == MODEL_UNKNOWN ? JSONObject.NULL : id)
                 .put("model_id_source", bydModelSource)
                 .put("tested_model", id == DOLPHIN_MODEL_ID)
-                .put("vehicle_type", vehicleType == null || vehicleType.isEmpty() ? JSONObject.NULL : vehicleType);
+                .put("vehicle_type", vehicleType == null || vehicleType.isEmpty() ? JSONObject.NULL : vehicleType)
+                .put("firmware", firmware != null ? firmware : JSONObject.NULL);
     }
 
     /** BYD battery's choice and its last reading; null fields when it is off or has not read yet. */

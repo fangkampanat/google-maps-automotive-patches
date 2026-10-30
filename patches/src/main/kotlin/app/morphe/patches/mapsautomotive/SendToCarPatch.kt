@@ -5,6 +5,8 @@ import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLa
 import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.patch.BytecodePatchContext
 import app.morphe.patcher.patch.PatchException
+import app.morphe.patcher.patch.bytecodePatch
+import app.morphe.patcher.patch.resourcePatch
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod.Companion.toMutable
 import app.morphe.patcher.util.smali.ExternalLabel
@@ -28,19 +30,24 @@ import com.android.tools.smali.dexlib2.iface.reference.StringReference
 import com.android.tools.smali.dexlib2.iface.reference.TypeReference
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter
+import org.w3c.dom.Document
+import org.w3c.dom.Element
+import org.w3c.dom.Node
 import java.util.logging.Logger
 
-// Send to car. Phone Maps sends a trip through Google's notification service
-// (Chime, "GnpSdk" in Maps) as a maps.app.goo.gl link; on the car Maps opens it as a route preview.
-// Three things stood in the way with MicroG-RE 7.2.2:
-// push actions under Google's names (routed in AutomotiveMicroGPatch.kt), the GnpSdk identity below,
-// and the short link, which Maps expands through Firebase Dynamic Links and MicroG-RE answers without
-// data (MicroG-RE #329). Required: a missing anchor, an ambiguity or an unknown layout fails the patch.
+// Send to car, a separate patch on top of the core one. Phone Maps sends a trip through Google's
+// notification service (Chime, "GnpSdk" in Maps) as a maps.app.goo.gl link; on the car Maps opens it
+// as a route preview. Three things stood in the way with MicroG-RE 7.2.2:
+// push actions under Google's names, the GnpSdk identity, and the short link, which Maps expands
+// through Firebase Dynamic Links and MicroG-RE answers without data (MicroG-RE #329). The identity and
+// the links follow the feature switch at run time (SendToCarLinks); the push routes are fixed.
+// Required: a missing anchor, an ambiguity or an unknown layout fails the patch.
 
 private const val SEND_TO_CAR_LINKS_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/SendToCarLinks;"
 private const val LINK_TARGET_INTERFACE = "Lapp/morphe/extension/mapsautomotive/patches/SendToCarLinks\$Target;"
 private const val OPEN_MAPS_LINK = "morpheOpenMapsLink"
 private const val CLEAR_SENT_TRIP = "morpheClearSentTrip"
+private const val CHIME_PACKAGE = "chimePackage"
 private const val EXTENSION_PREFIX = "Lapp/morphe/extension/"
 private const val CONTEXT = "Landroid/content/Context;"
 private const val INTENT = "Landroid/content/Intent;"
@@ -56,13 +63,112 @@ private const val DYNAMIC_LINK_REGISTRAR = "Lcom/google/firebase/dynamiclinks/in
 private const val SHORT_LINK_PATTERN = "^https?://maps\\.app\\.goo\\.gl/.+"
 private val sendToCarLogger = Logger.getLogger("app.morphe.patches.mapsautomotive.SendToCarPatch")
 
+// MicroG-RE 7.2.2 serves and sends push (GCM/FCM/IID) only under its own names, so Maps' token
+// requests, the registration reply and the delivered messages need them too. Without them Chime never
+// registers the car.
+private const val PUSH_RECEIVE_ACTION = "com.google.android.c2dm.intent.RECEIVE"
+private val pushActionRoutes = mapOf(
+    "com.google.android.c2dm.intent.REGISTER" to "$C2DM_PACKAGE_NAME.intent.REGISTER",
+    "com.google.android.c2dm.intent.REGISTRATION" to "$C2DM_PACKAGE_NAME.intent.REGISTRATION",
+    PUSH_RECEIVE_ACTION to "$C2DM_PACKAGE_NAME.intent.RECEIVE",
+    "com.google.android.c2dm.intent.UNREGISTER" to "$C2DM_PACKAGE_NAME.intent.UNREGISTER",
+    "com.google.android.gcm.intent.SEND" to "$GMS_CORE_VENDOR_GROUP.android.gcm.intent.SEND",
+    "com.google.iid.TOKEN_REQUEST" to "$GMS_CORE_VENDOR_GROUP.iid.TOKEN_REQUEST",
+)
+// The token request (two ways), the registration reply and message intake; UNREGISTER and
+// gcm.intent.SEND are routed when present.
+private val requiredPushActions = listOf(
+    "com.google.android.c2dm.intent.REGISTER",
+    "com.google.iid.TOKEN_REQUEST",
+    "com.google.android.c2dm.intent.REGISTRATION",
+    PUSH_RECEIVE_ACTION,
+)
+
+private val pushReceiverPatch = resourcePatch {
+    dependsOn(manifestPatch)
+    execute {
+        document("AndroidManifest.xml").use { document ->
+            routePushActions(document.documentElement)
+            validatePushReceiver(document)
+        }
+    }
+}
+
+@Suppress("unused")
+val sendToCarPatch = bytecodePatch(
+    name = "Send to car",
+    description = "Lets phone Maps send a trip to Maps Car through MicroG-RE (push routes, the notification " +
+        "service identity and maps.app.goo.gl links).",
+    default = true,
+) {
+    compatibleWith(compatibility)
+    dependsOn(automotiveMicroGPatch, pushReceiverPatch)
+
+    execute {
+        routePushStrings()
+        useOriginalPackageForChime()
+        expandSendToCarLinks()
+        IncludedFeatures.features += "send_to_car"
+    }
+}
+
+private fun routePushActions(node: Node) {
+    if (node is Element && node.tagName == "action") {
+        pushActionRoutes[node.getAttribute("android:name")]?.let { node.setAttribute("android:name", it) }
+    }
+    val children = node.childNodes
+    for (index in 0 until children.length) routePushActions(children.item(index))
+}
+
+// The push receiver is protected by the (renamed) c2dm SEND permission and must now listen to
+// MicroG-RE's RECEIVE action; no Google c2dm name may be left in the manifest.
+private fun validatePushReceiver(document: Document) {
+    val receivers = document.getElementsByTagName("receiver")
+    var routed = 0
+    for (index in 0 until receivers.length) {
+        val receiver = receivers.item(index) as? Element ?: continue
+        if (receiver.getAttribute("android:permission") != "$C2DM_PACKAGE_NAME.permission.SEND") continue
+        val actions = receiver.getElementsByTagName("action")
+        for (action in 0 until actions.length) {
+            if ((actions.item(action) as Element).getAttribute("android:name") == pushActionRoutes[PUSH_RECEIVE_ACTION]) routed++
+        }
+    }
+    if (routed != 1) throw PatchException("Expected one push receiver with MicroG-RE's RECEIVE action, found $routed")
+
+    val stale = mutableListOf<String>()
+    fun collect(node: Node) {
+        if (node is Element) {
+            val attributes = node.attributes
+            for (index in 0 until attributes.length) {
+                val value = attributes.item(index).nodeValue
+                if (value.startsWith("com.google.android.c2dm.") || value in pushActionRoutes) stale += value
+            }
+        }
+        val children = node.childNodes
+        for (index in 0 until children.length) collect(children.item(index))
+    }
+    collect(document.documentElement)
+    if (stale.isNotEmpty()) throw PatchException("Push names left unrouted in the manifest: ${stale.joinToString()}")
+    sendToCarLogger.info("Push receiver routed to MicroG-RE's RECEIVE action")
+}
+
+// The same names in Maps' code. An unrecognized push layout (another mechanism, or none) fails
+// instead of leaving Send to car broken.
+private fun BytecodePatchContext.routePushStrings() {
+    val routes = replaceStringLiterals { pushActionRoutes[it] }
+    val missing = requiredPushActions.filter { it !in routes }
+    if (missing.isNotEmpty()) throw PatchException("Push actions not found in Maps code: ${missing.joinToString()}")
+    sendToCarLogger.info("Routed push actions to MicroG-RE: $routes")
+}
+
 // GnpSdk puts Context.getPackageName() into its registration and device-info requests, while MicroG-RE
 // signs Maps in as SPOOFED_PACKAGE_NAME; Google rejects the mismatch, as it did for re-signed YouTube
 // (morphe-patches #3481). These requests are the ones built next to the device identity GnpSdk sends:
 // the GServices android ID and the user serial, read directly or through static (Context)Long helpers.
-// The registration request calls such a builder of its own class. Each package read there becomes
-// the original AAOS package; GnpSdk's other reads (PackageManager lookups, intents, metrics) stay.
-internal fun BytecodePatchContext.useOriginalPackageForChime() {
+// The registration request calls such a builder of its own class. Each package read there passes
+// through SendToCarLinks.chimePackage, which gives the original AAOS package while Send to car is on;
+// GnpSdk's other reads (PackageManager lookups, intents, metrics) stay.
+private fun BytecodePatchContext.useOriginalPackageForChime() {
     val mapsClasses = buildList { classDefForEach { if (!it.type.startsWith(EXTENSION_PREFIX)) add(it) } }
 
     val gservicesHelpers = mutableSetOf<String>()
@@ -100,22 +206,28 @@ internal fun BytecodePatchContext.useOriginalPackageForChime() {
     if (direct.none { it.hasStringStarting(GSERVICES_KEY_ERROR) }) throw PatchException("GnpSdk device-info builder not found")
     if (direct.none { it.callsAny(gservicesHelpers + serialHelpers) }) throw PatchException("GnpSdk registration builder not found")
 
+    requireExtensionMethod(SEND_TO_CAR_LINKS_CLASS, CHIME_PACKAGE, listOf(STRING), STRING)
     var reads = 0
     builders.forEach { method ->
         val mutable = mutableMethodOf(method)
         val code = mutable.implementation!!.instructions
-        mutable.packageReads().forEach { index ->
+        // From the last read, so the earlier indices stay valid.
+        mutable.packageReads().sortedDescending().forEach { index ->
             val result = code.getOrNull(index + 1)
             if (result?.opcode != Opcode.MOVE_RESULT_OBJECT) throw PatchException("Unexpected GnpSdk package read in $method")
-            mutable.replaceInstruction(
-                index + 1,
-                "const-string v${(result as OneRegisterInstruction).registerA}, \"$ORIGINAL_PACKAGE_NAME\"",
+            val register = (result as OneRegisterInstruction).registerA
+            mutable.addInstructions(
+                index + 2,
+                """
+                    invoke-static/range { v$register .. v$register }, $SEND_TO_CAR_LINKS_CLASS->$CHIME_PACKAGE($STRING)$STRING
+                    move-result-object v$register
+                """.trimIndent(),
             )
             reads++
         }
     }
     sendToCarLogger.info(
-        "GnpSdk identity: $reads package reads in ${builders.size} methods use $ORIGINAL_PACKAGE_NAME: " +
+        "GnpSdk identity: $reads package reads in ${builders.size} methods pass through $CHIME_PACKAGE: " +
             builders.joinToString { it.key() },
     )
 }
@@ -125,7 +237,7 @@ internal fun BytecodePatchContext.useOriginalPackageForChime() {
 // Before that call the processor asks SendToCarLinks, which follows the link's redirect itself and then
 // calls the same handler through a bridge the processor gets here; Dynamic Links is then skipped. Any
 // other link, or a "no" from the extension, takes Maps' Dynamic Links path as before.
-internal fun BytecodePatchContext.expandSendToCarLinks() {
+private fun BytecodePatchContext.expandSendToCarLinks() {
     requireSendToCarExtension()
     val getter = dynamicLinkGetter()
     val pattern = shortLinkPatternField()

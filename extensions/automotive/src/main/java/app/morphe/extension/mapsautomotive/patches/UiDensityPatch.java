@@ -7,6 +7,9 @@ import android.content.ContextWrapper;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.content.res.Resources;
+import android.graphics.Point;
+import android.hardware.display.DisplayManager;
+import android.view.Display;
 import android.view.View;
 
 import app.morphe.extension.shared.Utils;
@@ -19,15 +22,20 @@ import app.morphe.extension.shared.Utils;
  * windows wider in dp, without changing other apps or the system.
  * <p>
  * The choice is stored in this app's preferences and read when the Application and each activity
- * attach their base context, so a new choice applies after the app restarts.
+ * attach their base context, so a new choice applies after the app restarts. Without a choice, 200
+ * dpi applies only on the screen it was chosen on (1920x1080 at 240 dpi, the Dolphin's); other
+ * screens keep the system density until the user picks one (from 0.1.1).
  */
 @SuppressWarnings("unused")
 public final class UiDensityPatch {
     private static final String TAG = "MorpheUiDensity";
     private static final String PREFERENCES = "morphe_ui_density";
     private static final String KEY_DENSITY_DPI = "density_dpi";
-    /** Without a stored choice: 200 dpi, chosen on the Dolphin after trying 160 and 180. */
+    /** Chosen on the Dolphin after trying 160 and 180; the default on that screen only. */
     private static final int DEFAULT_DENSITY_DPI = 200;
+    /** The Dolphin's screen, in either orientation, at its system density. */
+    private static final int TESTED_LONG_PX = 1920, TESTED_SHORT_PX = 1080, TESTED_SYSTEM_DPI = 240;
+    private static volatile int defaultDpi = -1;
     /** 0 keeps the system density. */
     private static final int[] CHOICES = {0, 200, 180, 160};
     private static boolean logged;
@@ -35,11 +43,12 @@ public final class UiDensityPatch {
     private UiDensityPatch() {
     }
 
-    /** The stored choice, 200 when nothing is stored, 0 for the system density. */
+    /** The stored choice, the default when nothing is stored, 0 for the system density. */
     static int getTargetDensityDpi(Context context) {
         try {
-            int value = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-                    .getInt(KEY_DENSITY_DPI, DEFAULT_DENSITY_DPI);
+            SharedPreferences preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
+            if (!preferences.contains(KEY_DENSITY_DPI)) return defaultDensityDpi(context);
+            int value = preferences.getInt(KEY_DENSITY_DPI, DEFAULT_DENSITY_DPI);
             for (int choice : CHOICES) {
                 if (choice == value) return value;
             }
@@ -47,7 +56,32 @@ public final class UiDensityPatch {
         } catch (RuntimeException exception) {
             ReportLog.w(TAG, "Could not read the UI density choice", exception);
         }
-        return DEFAULT_DENSITY_DPI;
+        return defaultDensityDpi(context);
+    }
+
+    /** Without a stored choice: 200 on the tested screen, else 0 (the system density). */
+    static int defaultDensityDpi(Context context) {
+        int value = defaultDpi;
+        if (value >= 0) return value;
+        int system = Resources.getSystem().getConfiguration().densityDpi;
+        Point size = new Point();
+        try {
+            DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+            Display display = displays == null ? null : displays.getDisplay(Display.DEFAULT_DISPLAY);
+            if (display != null) display.getRealSize(size);
+        } catch (RuntimeException exception) {
+            ReportLog.w(TAG, "Could not read the screen size", exception);
+        }
+        value = testedScreen(size.x, size.y, system) ? DEFAULT_DENSITY_DPI : 0;
+        defaultDpi = value;
+        ReportLog.i(TAG, "Default UI density " + (value > 0 ? value + " dpi" : "system") + " (screen " + size.x + "x"
+                + size.y + " at " + system + " dpi" + (value > 0 ? ", the tested screen)" : ", not the tested 1920x1080 at 240 dpi)"));
+        return value;
+    }
+
+    static boolean testedScreen(int width, int height, int systemDpi) {
+        return Math.max(width, height) == TESTED_LONG_PX && Math.min(width, height) == TESTED_SHORT_PX
+                && systemDpi == TESTED_SYSTEM_DPI;
     }
 
     /** For the problem report: the stored choice, 0 for the system density, null when nothing is stored. */
@@ -69,6 +103,7 @@ public final class UiDensityPatch {
      */
     public static Context wrap(Context base) {
         if (base == null) return null;
+        if (!SafeMode.on(base, SafeMode.UI_DENSITY)) return base;
         int target = getTargetDensityDpi(base);
         if (target <= 0) return base;
         try {
@@ -97,6 +132,9 @@ public final class UiDensityPatch {
 
     /** Injection point: the row subtitle, the current choice. */
     public static String getSettingsSummary(Context context) {
+        if (!SafeMode.on(context, SafeMode.UI_DENSITY)) {
+            return isThai(context) ? "ใช้ขนาดของระบบชั่วคราว · สวิตช์ใน Maps Car report" : "System density for now · switch in Maps Car report";
+        }
         return describedLabel(context, getTargetDensityDpi(context));
     }
 
@@ -163,7 +201,7 @@ public final class UiDensityPatch {
     private static String describedLabel(Context context, int densityDpi) {
         boolean thai = isThai(context);
         int dpi = densityDpi > 0 ? densityDpi : Resources.getSystem().getConfiguration().densityDpi;
-        String hint = densityDpi == DEFAULT_DENSITY_DPI ? (thai ? "ค่าเริ่มต้น" : "default")
+        String hint = densityDpi == defaultDensityDpi(context) ? (thai ? "ค่าเริ่มต้น" : "default")
                 : dpi > DEFAULT_DENSITY_DPI ? (thai ? "ใหญ่ขึ้น การ์ดอาจล้นเมื่อแบ่งจอ" : "larger, cards may not fit in split screen")
                 : dpi == CHOICES[CHOICES.length - 1] ? (thai ? "เล็กที่สุด" : "smallest")
                 : dpi < DEFAULT_DENSITY_DPI ? (thai ? "เล็กลง" : "smaller") : null;

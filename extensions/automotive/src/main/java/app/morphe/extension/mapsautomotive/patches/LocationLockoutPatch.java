@@ -38,6 +38,7 @@ public final class LocationLockoutPatch {
      */
     public static boolean deferLocationChange(BroadcastReceiver receiver, Context context, Intent intent) {
         try {
+            if (!SafeMode.on(context, SafeMode.LOCATION_LOCKOUT_DELAY)) return false;
             LocationManager locations = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
             if (locations == null) return false;
             long now = SystemClock.elapsedRealtime();

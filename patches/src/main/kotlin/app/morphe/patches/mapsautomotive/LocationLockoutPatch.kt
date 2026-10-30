@@ -3,6 +3,7 @@ package app.morphe.patches.mapsautomotive
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.patch.BytecodePatchContext
 import app.morphe.patcher.patch.PatchException
+import app.morphe.patcher.patch.bytecodePatch
 import app.morphe.patcher.util.smali.ExternalLabel
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
@@ -21,7 +22,8 @@ import java.util.logging.Logger
 // controller keeps PROVIDERS_CHANGED and MODE_CHANGED in a static set, recomputes its lockouts from
 // LocationManager.isLocationEnabled(), and its receiver calls that recomputation for those actions.
 // The receiver first asks LocationLockoutPatch, which holds a location-off broadcast back for up to
-// 3 s. Required: a missing anchor, an ambiguity or an unknown layout fails the patch.
+// 3 s while its feature switch is on. A separate patch on top of the core one.
+// Required: a missing anchor, an ambiguity or an unknown layout fails the patch.
 
 private const val LOCATION_LOCKOUT_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/LocationLockoutPatch;"
 private const val PROVIDERS_CHANGED = "android.location.PROVIDERS_CHANGED"
@@ -32,7 +34,22 @@ private const val LOCATION_MANAGER = "Landroid/location/LocationManager;"
 private val onReceiveParameters = listOf("Landroid/content/Context;", "Landroid/content/Intent;")
 private val locationLockoutLogger = Logger.getLogger("app.morphe.patches.mapsautomotive.LocationLockoutPatch")
 
-internal fun BytecodePatchContext.delayLocationLockout() {
+@Suppress("unused")
+val bydLocationFlickerPatch = bytecodePatch(
+    name = "BYD location flicker fix",
+    description = "Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout.",
+    default = true,
+) {
+    compatibleWith(compatibility)
+    dependsOn(automotiveMicroGPatch)
+
+    execute {
+        delayLocationLockout()
+        IncludedFeatures.features += "location_lockout_delay"
+    }
+}
+
+private fun BytecodePatchContext.delayLocationLockout() {
     val extension = classDefByOrNull(LOCATION_LOCKOUT_CLASS)
         ?: throw PatchException("Missing extension class $LOCATION_LOCKOUT_CLASS")
     if (extension.methods.none {

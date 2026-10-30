@@ -10,20 +10,26 @@ The patched app, **Maps Car** (`app.morphe.android.apps.maps.automotive`), insta
 
 ## Features
 
-- **UI density** in Settings, so the car layout fits split screen.
+- **UI density** in Settings, so the car layout fits split screen. Until you choose one, it is 200 dpi on the Dolphin's screen (1920×1080) and the system density on other screens.
 - **BYD battery (EV)** in Settings: Maps shows the battery on arrival from the car's own reading. Read-only.
 - **Send to car** from phone Google Maps on the same Google account.
+- **Problem report and safe mode**: A Maps Car report app icon to send a report, and switches to turn single features off.
+
+BYD battery, Send to car and the BYD location flicker fix are separate patches, on by default. You can leave them out in Morphe Desktop; only the default set is tested.
 
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.1.0](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.0) · 1 patch
+[v0.1.1](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.1) · 4 patches
 
 Eligible versions: Any version.
 
 | Patch | Description |
 | --- | --- |
-| Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 as "Maps Car" with MicroG-RE 7.2.2. Adds UI density and BYD battery (EV) settings and Send to car. |
+| BYD battery (EV) | Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). On by default on the tested BYD Dolphin, off with an "untested" notice on other BYD models; a Settings row turns it on or off. |
+| BYD location flicker fix | Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout. |
+| Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 as "Maps Car" with MicroG-RE 7.2.2. Adds a UI density setting, a problem report and a safe mode. |
+| Send to car | Lets phone Maps send a trip to Maps Car through MicroG-RE (push routes, the notification service identity and maps.app.goo.gl links). |
 
 <!-- PATCHES_END -->
 
@@ -62,9 +68,11 @@ Other BYD models, DiLink 5 and Android 11 to 15 are untested. On other BYD model
 
 ## Reporting problems
 
-In Maps Car, open **Settings › Report a problem**, check the report and tap **Send**. Nothing leaves the car before that. Your location, e-mail and VIN are removed first, and the report is deleted after 14 days.
+Open the **Maps Car report** icon (or tap the notification after a crash, or **Settings › Report a problem**), check the report and tap **Send**. Nothing leaves the car before that. A report holds Maps Car's own logs, the car model and screen, and for each crash the warning and error lines the crashed process wrote to the system log. Your location, e-mail and VIN are removed first, and the report is deleted after 14 days.
 
-Then open an [issue](https://github.com/fangkampanat/google-maps-automotive-patches/issues) with the report ID. If Maps Car will not start, describe the car model, DiLink version and bundle version instead.
+Then open an [issue](https://github.com/fangkampanat/google-maps-automotive-patches/issues) with the report ID. If no report can be sent, attach the crash file from `Documents/Morphe` on the head unit (`adb pull /sdcard/Documents/Morphe/`).
+
+If Maps Car crashes twice within 10 minutes, it starts in **safe mode** with its extra features off. In Maps Car report you can turn features back on one at a time to find the one that crashes.
 
 ## Credits and license
 

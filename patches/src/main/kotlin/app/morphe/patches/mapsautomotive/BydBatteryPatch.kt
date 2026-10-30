@@ -1,10 +1,13 @@
 package app.morphe.patches.mapsautomotive
 
+import app.morphe.patcher.extensions.InstructionExtensions.addInstruction
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.patch.BytecodePatchContext
 import app.morphe.patcher.patch.PatchException
+import app.morphe.patcher.patch.bytecodePatch
+import app.morphe.patcher.patch.resourcePatch
 import app.morphe.patcher.util.getFreeRegisterProvider
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
 import app.morphe.patcher.util.smali.ExternalLabel
@@ -25,10 +28,10 @@ import org.w3c.dom.Document
 import org.w3c.dom.Element
 import java.util.logging.Logger
 
-// BYD battery for Maps' EV routing. The AAOS build reads a
+// BYD battery for Maps' EV routing, a separate patch on top of the core one. The AAOS build reads a
 // car's energy model from an OEM ContentProvider; Maps Car acts as that source. Each hook below calls BydBatteryPatch, which
-// returns the original value unless BYD battery is turned on in Settings on a BYD car. All hooks are
-// required: a missing anchor, an ambiguity or an unknown layout fails the patch.
+// returns the original value unless BYD battery is turned on in Settings on a BYD car and its feature
+// switch is on. All hooks are required: a missing anchor, an ambiguity or an unknown layout fails the patch.
 
 internal const val BYD_BATTERY_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/BydBatteryPatch;"
 private const val ENERGY_PROVIDER_CLASS = "app.morphe.extension.mapsautomotive.patches.BydEnergyModelProvider"
@@ -112,12 +115,46 @@ private fun MutableMethod.filterString(index: Int, register: Int, extensionMetho
         """.trimIndent(),
     )
 
-internal fun BytecodePatchContext.addBydBatteryHooks() {
-    requireBydBatteryMethods()
-    declareBydVehicle()
-    redirectEnergyModelListener()
-    acceptOwnEnergyProvider()
-    readOwnEnergyModel()
+private val bydEnergyProviderPatch = resourcePatch {
+    dependsOn(manifestPatch)
+    execute {
+        document("AndroidManifest.xml").use { addBydEnergyProvider(it, PATCHED_PACKAGE_NAME) }
+    }
+}
+
+@Suppress("unused")
+val bydBatteryPatch = bytecodePatch(
+    name = "BYD battery (EV)",
+    description = "Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). " +
+        "On by default on the tested BYD Dolphin, off with an \"untested\" notice on other BYD models; a Settings row turns it on or off.",
+    default = true,
+) {
+    compatibleWith(compatibility)
+    dependsOn(automotiveMicroGPatch, bydEnergyProviderPatch)
+
+    execute {
+        requireBydBatteryMethods()
+        startBydBattery()
+        declareBydVehicle()
+        redirectEnergyModelListener()
+        acceptOwnEnergyProvider()
+        readOwnEnergyModel()
+        IncludedFeatures.settingsRows += BYD_BATTERY_CLASS
+        IncludedFeatures.features += "byd_battery"
+    }
+}
+
+// BYD battery is decided at the Application's attachBaseContext: Maps' content providers and its
+// onCreate run after it and may build the components that read the vehicle type. It takes the base
+// context as the Application receives it. SafeMode is read before it (added in the core's finalize).
+private fun BytecodePatchContext.startBydBattery() {
+    findHierarchyHook(APPLICATION_CLASS, "Maps application attachBaseContext") {
+        it.name == "attachBaseContext" && it.returnType == "V" &&
+            it.parameterTypes.map { type -> type.toString() } == listOf("Landroid/content/Context;")
+    }.addInstruction(
+        0,
+        "invoke-static/range { p1 .. p1 }, $BYD_BATTERY_CLASS->attachBaseContext(Landroid/content/Context;)V",
+    )
 }
 
 // Without the automotive feature Maps' vehicle info has no fuel type, so Maps shows no EV UI and

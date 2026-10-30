@@ -5,7 +5,7 @@ body:
     id: report-id
     attributes:
       label: Report ID
-      description: Shown after you send a report from Settings › Report a problem in Maps Car. Leave empty if Maps Car does not start.
+      description: Shown after you send a report from the Maps Car report icon (or Settings › Report a problem). If no report could be sent, leave it empty and attach the crash file from Documents/Morphe below.
       placeholder: MC-XXXX-XXXX
   - type: input
     id: car
@@ -40,6 +40,6 @@ body:
     id: problem
     attributes:
       label: What happened
-      description: What you did, what you expected and what Maps Car did instead.
+      description: What you did, what you expected and what Maps Car did instead. Say if Maps Car was in safe mode or you turned features off.
     validations:
       required: true

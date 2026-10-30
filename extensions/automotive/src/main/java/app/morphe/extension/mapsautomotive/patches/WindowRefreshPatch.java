@@ -37,8 +37,8 @@ public final class WindowRefreshPatch {
     private static final int MAX_ATTACH_ATTEMPTS = 5, MAX_RETRIES = 2;
     private static final Set<View> attached = Collections.newSetFromMap(new WeakHashMap<>());
     private static Handler main;
-    /** MapsActivity's last decor size and multi-window mode, for the problem report. */
-    static volatile int decorWidth, decorHeight;
+    /** MapsActivity's last decor size, multi-window mode and density, for the problem report. */
+    static volatile int decorWidth, decorHeight, densityDpi;
     static volatile Boolean multiWindow;
 
     private WindowRefreshPatch() {
@@ -47,6 +47,7 @@ public final class WindowRefreshPatch {
     /** Injection point: start of MapsActivity's onCreate, before the decor view exists. */
     public static void install(Activity activity) {
         try {
+            if (!SafeMode.on(activity, SafeMode.WINDOW_REFRESH)) return;
             if (main == null) main = new Handler(Looper.getMainLooper());
             main.post(() -> attach(activity, 1));
         } catch (Throwable error) {
@@ -103,6 +104,8 @@ public final class WindowRefreshPatch {
             boolean first = !laidOut;
             laidOut = true;
             if (!first && width == oldWidth && height == oldHeight) return;
+            densityDpi = activity.getResources().getConfiguration().densityDpi;
+            ReportBuilder.saveSnapshot(activity.getApplicationContext(), true);
             String reason = (first ? "first layout " : "resized ") + oldWidth + "x" + oldHeight + " -> " + width + "x" + height;
             // Not from inside the layout pass: the request schedules the next traversal.
             main.post(() -> refresh(reason, 0));
