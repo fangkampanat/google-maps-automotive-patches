@@ -30,6 +30,7 @@ Eligible versions: Any version.
 | BYD battery (EV) | Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). On by default on the tested BYD Dolphin, off with an "untested" notice on other BYD models; a Settings row turns it on or off. |
 | BYD location flicker fix | Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout. |
 | BYD navigation volume | Plays Maps' spoken directions on BYD's navigation volume instead of the media volume. |
+| Driving position (RHD / LHD) | Selects right-hand drive or left-hand drive UI layouts, with auto-detection for BYD and other RHD vehicles. |
 | Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 as "Maps Car" with MicroG-RE 7.3.0. Adds a UI density setting, a problem report and a safe mode. |
 | Send to car | Lets phone Maps send a trip to Maps Car through MicroG-RE (push routes, the notification service identity and maps.app.goo.gl links). |
 

@@ -344,6 +344,7 @@ public final class ReportPatch {
             case SafeMode.SEND_TO_CAR: return "Send to car";
             case SafeMode.LOCATION_LOCKOUT_DELAY: return thai ? "แก้ตำแหน่งกะพริบของ BYD" : "BYD location flicker fix";
             case SafeMode.BYD_NAVIGATION_VOLUME: return thai ? "ระดับเสียงนำทางของ BYD" : "BYD navigation volume";
+            case SafeMode.DRIVER_POSITION: return thai ? "ตำแหน่งพวงมาลัย (Driving position)" : "Driving position (RHD / LHD)";
             case SafeMode.TTS_WARMUP: return thai ? "เตรียมเสียงนำทางล่วงหน้า (TTS)" : "Voice guidance warm-up (TTS)";
             case SafeMode.WINDOW_REFRESH: return thai ? "ปรับเลย์เอาต์เมื่อแบ่งจอ" : "Split-screen layout refresh";
             default: return thai ? "แถวของ Maps Car ใน Settings" : "Maps Car rows in Settings";
@@ -357,6 +358,7 @@ public final class ReportPatch {
             case SafeMode.SEND_TO_CAR: return thai ? "รับทริปจากมือถือไม่ได้" : "trips from the phone do not arrive";
             case SafeMode.LOCATION_LOCKOUT_DELAY: return thai ? "หน้าจอตำแหน่งปิดกะพริบเมื่อ GPS ของ BYD หลุด" : "the location lockout flashes when BYD's GPS drops";
             case SafeMode.BYD_NAVIGATION_VOLUME: return thai ? "เสียงนำทางใช้ระดับเสียงเพลง" : "voice guidance follows the media volume";
+            case SafeMode.DRIVER_POSITION: return thai ? "ใช้ตำแหน่งเริ่มต้นของรถ (พวงมาลัยซ้าย)" : "uses default vehicle layout (LHD)";
             case SafeMode.TTS_WARMUP: return thai ? "เสียงนำทางแรกอาจเป็นเสียงสำรอง" : "the first prompt may use the canned voice";
             case SafeMode.WINDOW_REFRESH: return thai ? "การ์ดอาจใหญ่เกินหลังแบ่งจอ" : "cards may stay too large after a split-screen change";
             default: return thai ? "Settings ของ Maps ไม่มีแถวของ Maps Car" : "Maps' Settings without Maps Car's rows";

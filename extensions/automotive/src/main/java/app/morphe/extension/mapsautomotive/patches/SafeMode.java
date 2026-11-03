@@ -51,10 +51,11 @@ public final class SafeMode {
     static final String TAG = "MorpheSafeMode";
     static final String UI_DENSITY = "ui_density", BYD_BATTERY = "byd_battery", SEND_TO_CAR = "send_to_car",
             LOCATION_LOCKOUT_DELAY = "location_lockout_delay", BYD_NAVIGATION_VOLUME = "byd_navigation_volume",
-            TTS_WARMUP = "tts_warmup", WINDOW_REFRESH = "window_refresh", SETTINGS_ROWS = "settings_rows";
+            TTS_WARMUP = "tts_warmup", WINDOW_REFRESH = "window_refresh", SETTINGS_ROWS = "settings_rows",
+            DRIVER_POSITION = "driver_position";
     /** Every switchable feature, in the report screen's order. */
     static final String[] FEATURES = {UI_DENSITY, BYD_BATTERY, SEND_TO_CAR, LOCATION_LOCKOUT_DELAY,
-            BYD_NAVIGATION_VOLUME, TTS_WARMUP, WINDOW_REFRESH, SETTINGS_ROWS};
+            BYD_NAVIGATION_VOLUME, DRIVER_POSITION, TTS_WARMUP, WINDOW_REFRESH, SETTINGS_ROWS};
     /** In the core patch; the others are in the APK only when their own patch was included. */
     private static final List<String> CORE = Arrays.asList(UI_DENSITY, TTS_WARMUP, WINDOW_REFRESH, SETTINGS_ROWS);
     /** Must match the activity's process in the patch. */
@@ -188,6 +189,7 @@ public final class SafeMode {
         if (included(SEND_TO_CAR)) names.add("Send to car");
         if (included(LOCATION_LOCKOUT_DELAY)) names.add("BYD location flicker fix");
         if (included(BYD_NAVIGATION_VOLUME)) names.add("BYD navigation volume");
+        if (included(DRIVER_POSITION)) names.add("Driving position (RHD / LHD)");
         return names;
     }
 
