@@ -199,6 +199,8 @@ val automotiveMicroGPatch = bytecodePatch(
         applyUiDensity()
         useDriverSide()
         useColorScheme()
+        useCarColorsOnCluster()
+        useCarSatelliteOnCluster()
     }
 
     finalize {
