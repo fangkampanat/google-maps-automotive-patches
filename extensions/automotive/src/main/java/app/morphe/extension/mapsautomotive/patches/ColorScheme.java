@@ -62,8 +62,10 @@ public final class ColorScheme {
     static final long LAST_LIGHTS_MAX_AGE_MS = 2 * 60 * 60 * 1000;
     /** While the state holds it is stored again this often, so its age counts from the last reading. */
     private static final long LAST_LIGHTS_STORE_EVERY_MS = 10 * 60 * 1000;
-    static final String AUTO = "auto", DAY = "day", NIGHT = "night";
-    private static final String[] CHOICES = {AUTO, DAY, NIGHT};
+    /** SYSTEM follows the head unit's day/night (Maps' own value), for cars whose system mode follows the car's
+     *  day/night setting; Auto follows the low beam, which on some models is the only reliable signal. */
+    static final String AUTO = "auto", SYSTEM = "system", DAY = "day", NIGHT = "night";
+    private static final String[] CHOICES = {AUTO, SYSTEM, DAY, NIGHT};
     /** Where the night value comes from (report and log). */
     static final String FROM_LIGHTS = "lights", FROM_WAITING = "waiting", FROM_MAPS = "maps", FROM_CHOICE = "choice",
             FROM_OFF = "off";
@@ -183,11 +185,11 @@ public final class ColorScheme {
     }
 
     /**
-     * The night value: Maps' value when switched off; Day false, Night true; Auto the low beam, else [held] (the value
-     * given last, while waiting for the first reading), else Maps' value.
+     * The night value: Maps' value when switched off or System; Day false, Night true; Auto the low beam, else [held]
+     * (the value given last, while waiting for the first reading), else Maps' value.
      */
     static boolean decide(boolean on, String choice, boolean mapsValue, Boolean lowBeamOn, Boolean held) {
-        if (!on) return mapsValue;
+        if (!on || SYSTEM.equals(choice)) return mapsValue;
         if (DAY.equals(choice)) return false;
         if (NIGHT.equals(choice)) return true;
         if (lowBeamOn != null) return lowBeamOn;
@@ -197,6 +199,7 @@ public final class ColorScheme {
     /** Where {@link #decide}'s value comes from. */
     static String source(boolean on, String choice, Boolean lowBeamOn, boolean waiting) {
         if (!on) return FROM_OFF;
+        if (SYSTEM.equals(choice)) return FROM_MAPS;
         if (DAY.equals(choice) || NIGHT.equals(choice)) return FROM_CHOICE;
         if (lowBeamOn != null) return FROM_LIGHTS;
         return waiting ? FROM_WAITING : FROM_MAPS;
@@ -715,6 +718,7 @@ public final class ColorScheme {
     private static String choiceLabel(String chosen, boolean thai) {
         if (DAY.equals(chosen)) return thai ? "กลางวัน" : "Day";
         if (NIGHT.equals(chosen)) return thai ? "กลางคืน" : "Night";
+        if (SYSTEM.equals(chosen)) return thai ? "ตามระบบ (กลางวัน/กลางคืนของหน่วยแสดงผล)" : "System (head unit day/night)";
         return thai ? "อัตโนมัติ (ตามไฟหน้า)" : "Auto (headlights)";
     }
 }
