@@ -96,7 +96,7 @@ Reports leave out your location, e-mail, VIN and push tokens, and are deleted af
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.1.9-dev.5](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.9-dev.5) · 7 patches
+[v0.1.9](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.9) · 7 patches
 
 Eligible versions: Any version.
 
