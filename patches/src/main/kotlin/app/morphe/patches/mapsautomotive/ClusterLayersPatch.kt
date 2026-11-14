@@ -21,8 +21,10 @@ import java.util.logging.Logger
 // The cluster map's layers follow the saved map layers, like the main map. The cluster map reads the
 // same saved layers as the main map (traffic, satellite, 3D buildings), but adds fixed overrides on top:
 // - Satellite (core patch, next to the cluster colors): the cluster's map controller turns satellite
-//   off because satellite is not allowed on the cluster. useCarSatelliteOnCluster reads that as
-//   allowed, so the saved satellite choice applies there too.
+//   off because satellite is not allowed on the cluster. useCarSatelliteOnCluster passes that value
+//   through ClusterSatellite.allowed (true while the cluster_satellite switch is on), so the saved
+//   satellite choice applies there too. The main map's controller is the same class, with the value
+//   true already.
 // - 3D buildings (3D buildings patch): the layers controller overrides the 3D layer with "is this map
 //   eligible for 3D buildings". The main map is eligible only while the user has 3D buildings on, so
 //   there the override repeats the user's choice; once the 3D buildings patch turns Google's flag on,
@@ -31,12 +33,14 @@ import java.util.logging.Logger
 //   the saved layers.
 // Traffic already follows the saved layers. Required: a missing anchor or an ambiguity fails the patch.
 
+private const val CLUSTER_SATELLITE_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/ClusterSatellite;"
 // Dump titles printed by the two classes.
 private const val LAYERS_CONTROLLER_TITLE = "FeatureEligibilityAwareLayersController:"
 private const val SATELLITE_ALLOWED_LABEL = "isSatelliteAllowed: "
 private val clusterLayersLogger = Logger.getLogger("app.morphe.patches.mapsautomotive.ClusterLayersPatch")
 
 internal fun BytecodePatchContext.useCarSatelliteOnCluster() {
+    requireExtensionMethod(CLUSTER_SATELLITE_CLASS, "allowed", listOf("Z"), "Z")
     allowSatelliteOnCluster(threeDOverride().overrideType)
 }
 
@@ -96,7 +100,7 @@ private fun BytecodePatchContext.keep3DToSavedLayers(o: ThreeDOverride) {
 }
 
 // The map controller's update reads "satellite allowed" (the field its dump prints) as a Boolean and
-// adds a satellite-off override when false. Set the read value to true.
+// adds a satellite-off override when false. The read value passes through ClusterSatellite.allowed.
 private fun BytecodePatchContext.allowSatelliteOnCluster(overrideType: String) {
     val mapController = classWithString(SATELLITE_ALLOWED_LABEL)
     val allowedField = satelliteAllowedField(mapController)
@@ -119,7 +123,13 @@ private fun BytecodePatchContext.allowSatelliteOnCluster(overrideType: String) {
         if (sites.isEmpty()) return@forEach
         val mutable = mutableMethodOf(method)
         sites.sortedByDescending { it.first }.forEach { (index, reg) ->
-            mutable.addInstructions(index + 1, "const/4 v$reg, 0x1")
+            mutable.addInstructions(
+                index + 1,
+                """
+                    invoke-static/range { v$reg .. v$reg }, $CLUSTER_SATELLITE_CLASS->allowed(Z)Z
+                    move-result v$reg
+                """,
+            )
             patched++
         }
     }

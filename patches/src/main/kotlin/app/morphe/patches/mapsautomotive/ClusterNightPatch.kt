@@ -16,11 +16,13 @@ import java.util.logging.Logger
 // Cluster colors follow the car (part of the core patch, with the color scheme). The cluster map
 // (EmbeddedClusterActivity) gets its "car maker wants night" flag from the car maker's instrument
 // cluster settings, read from a system content provider that BYD does not have. Without those
-// settings the cluster's settings observer falls back to the map style, and an unset style counts as
-// night, so the cluster map stayed in night colors while the main map and everything else followed
-// the car's day/night setting. The patch makes both fallback reads in the observer return "not night":
-// the cluster map then follows the same night value as the main map (the system configuration, or
-// ColorScheme's choice). A car maker setting that is actually sent still applies.
+// settings the cluster's settings observer falls back to the map style (night for styles 2, 5 and 6).
+// On a BYD Seal that fallback said night all day, so the cluster map stayed in night colors while the
+// main map and everything else followed the car's day/night setting. Both fallback reads in the
+// observer pass through ColorScheme.oemNight, which gives "not night" while Color scheme is on (Maps'
+// value when it is switched off): the cluster map then follows the same night value as the main map
+// (the system configuration, or ColorScheme's choice). A car maker setting that is actually sent still
+// applies. The observer also serves the main map's night mode controller, which gets the same value.
 // Required: a missing anchor, an ambiguity or an unknown layout fails the patch.
 
 // The observer's dump title, printed by its dump method.
@@ -31,6 +33,7 @@ private const val EXPECTED_FALLBACK_CALLS = 2
 private val clusterNightLogger = Logger.getLogger("app.morphe.patches.mapsautomotive.ClusterNightPatch")
 
 internal fun BytecodePatchContext.useCarColorsOnCluster() {
+    requireExtensionMethod(COLOR_SCHEME_CLASS, "oemNight", listOf("Z"), "Z")
     val observer = clusterSettingsObserver()
     val fallback = styleFallback(observer)
     var patched = 0
@@ -47,7 +50,13 @@ internal fun BytecodePatchContext.useCarColorsOnCluster() {
         if (sites.isEmpty()) return@forEach
         val mutable = mutableMethodOf(method)
         sites.sortedByDescending { it.first }.forEach { (index, register) ->
-            mutable.addInstructions(index + 1, "const/4 v$register, 0x0")
+            mutable.addInstructions(
+                index + 1,
+                """
+                    invoke-static/range { v$register .. v$register }, $COLOR_SCHEME_CLASS->oemNight(Z)Z
+                    move-result v$register
+                """,
+            )
             patched++
         }
     }
