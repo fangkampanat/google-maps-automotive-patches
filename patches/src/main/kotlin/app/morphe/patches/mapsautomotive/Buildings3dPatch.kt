@@ -55,6 +55,7 @@ val buildings3dPatch = bytecodePatch(
 
     execute {
         useBuildings3d()
+        useSaved3dLayerOnCluster()
         IncludedFeatures.features += "buildings_3d"
     }
 }
