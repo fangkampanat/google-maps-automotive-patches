@@ -20,6 +20,7 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 
 - Battery on arrival from the car's own reading (read-only).
 - Choose the battery to arrive with at charging stops, and see the battery health.
+- **Battery on the phone**, on by default: Maps sends the battery percentage to your Google account every 2 minutes while it runs, and this car's energy model (capacity, weight, consumption and charging curves, without the battery level) when it starts and every 2 hours. Google Maps on a phone signed in to the same account can then show this car's battery and the battery on arrival. A switch in the BYD battery dialog turns it off.
 - On cars with BYD's energy table, Maps plans with that table adjusted for your car from the A/C draw and guided routes.
 - **Export records** copies the drive records to `Android/data/app.morphe.android.apps.maps.automotive/files/Documents/morphe-drive-records`.
 
@@ -94,7 +95,7 @@ Reports leave out your location, e-mail, VIN and push tokens, and are deleted af
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.1.8](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.8) · 7 patches
+[v0.1.9-dev.3](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.9-dev.3) · 7 patches
 
 Eligible versions: Any version.
 
@@ -102,7 +103,7 @@ Eligible versions: Any version.
 | --- | --- | --- |
 | 3D buildings | Adds Maps' own 3D buildings to the map layers. Google hides them in this app. |  |
 | Android 9 (API 28) | Test builds for Android 9 head units (issue #11): lets the app install and start on Android 9. Tested on one Android 9 head unit; BYD head units do not need it. |  |
-| BYD battery (EV) | Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). On by default on the tested BYD Dolphin and on BYD model ids 128 and 138, where owners' reports show it working; off with an "untested" notice on other BYD models and on DiLink 5. A Settings row turns it on or off and sets the battery to arrive with at charging stops and at the destination. |  |
+| BYD battery (EV) | Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). On by default on the tested BYD Dolphin and on BYD model ids 128 and 138, where owners' reports show it working; off with an "untested" notice on other BYD models and on DiLink 5. A Settings row turns it on or off and sets the battery to arrive with at charging stops and at the destination. By default Maps also sends the battery percentage and this car's energy model to your Google account, so Google Maps on your phone can show the battery; a switch there turns that off. |  |
 | BYD location flicker fix | Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout. |  |
 | BYD navigation volume | Plays Maps' spoken directions on BYD's navigation volume instead of the media volume. |  |
 | Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 with MicroG-RE 7.3.0, named "Maps" unless the App name option says otherwise. Adds UI density, language, driver side and color scheme settings, a problem report, an update check and a safe mode. | • App name |
