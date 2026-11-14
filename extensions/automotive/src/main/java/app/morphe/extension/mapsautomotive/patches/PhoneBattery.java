@@ -20,6 +20,11 @@ import app.morphe.extension.shared.Utils;
  * whole percent of the energy model BYD battery sends (the dashboard's). Without a model Maps writes nothing and tries
  * again later, as on a car that holds the permission. A change applies at Maps' next upload, without a restart.
  * <p>
+ * <b>Sooner on a drop.</b> Maps schedules that task on a 2-minute timer; the patch keeps the timer's task
+ * ({@link #liveTask}). When Maps reads a model whose whole percent is below the one in its last upload
+ * ({@link #modelRead}), the task runs once 3 seconds later, at most once a minute, so the last drop before the car is
+ * turned off reaches the phone too. A rising percent (charging) waits for the timer.
+ * <p>
  * <b>The energy model.</b> Maps' energy-model task writes the car's model 5 seconds after each start and then every
  * 2 hours (a server value). It checks the permission three times. Once when Maps expects the car's model and has none
  * yet ({@link #modelPending}): with the permission it returns success without writing. And twice before it adds the
@@ -53,8 +58,73 @@ public final class PhoneBattery {
     private static volatile int modelChecks, modelShares, modelRetries;
     private static volatile String loggedModelState;
     private static volatile boolean modelFailureLogged;
+    /** After Maps reads a changed percent, the wait for it to take the model in, and the least time between such runs. */
+    private static final long CHANGE_DELAY_MS = 3000, MIN_CHANGE_INTERVAL_MS = 60000;
+    /** Maps' live vehicle info timer task (null before Maps schedules it). */
+    private static volatile Runnable liveTask;
+    /** The whole percent in the model Maps last read, and in Maps' last upload with a level; -1 before one. */
+    private static volatile int servedWhole = -1, uploadedWhole = -1;
+    /** Runs of the task after a change: the last one (elapsed realtime), one pending, how many. */
+    private static volatile long lastChangeRunAt;
+    private static volatile boolean changeRunPending;
+    private static volatile int changeRuns;
+    private static volatile boolean taskLogged, changeLogged, changeFailureLogged;
 
     private PhoneBattery() {
+    }
+
+    /** Injection point: Maps' live vehicle info timer task, as Maps schedules it (every start or account change). */
+    public static void liveTask(Runnable task) {
+        liveTask = task;
+        if (!taskLogged && task != null) {
+            taskLogged = true;
+            ReportLog.i(TAG, "Battery on the phone: Maps' upload task found, a lower percent goes up soon after it drops");
+        }
+    }
+
+    /** From BYD battery each time Maps reads its model: runs Maps' upload task soon when the whole percent changed. */
+    static void modelRead(double soc) {
+        try {
+            if (Double.isNaN(soc)) return;
+            int whole = (int) soc;
+            servedWhole = whole;
+            int uploaded = uploadedWhole;
+            // Drops only: while charging the percent rises often, and Maps' 2-minute timer is enough.
+            if (uploaded < 0 || whole >= uploaded || changeRunPending || liveTask == null) return;
+            if (!Utils.isContextSet() || !isOn(Utils.getContext())) return;
+            long delay = Math.max(CHANGE_DELAY_MS, lastChangeRunAt + MIN_CHANGE_INTERVAL_MS - SystemClock.elapsedRealtime());
+            changeRunPending = true;
+            if (!BydBatteryPatch.postToWorker(PhoneBattery::runAfterChange, delay)) changeRunPending = false;
+        } catch (Throwable error) {
+            if (!changeFailureLogged) {
+                changeFailureLogged = true;
+                ReportLog.w(TAG, "Battery on the phone: the change check failed", error);
+            }
+        }
+    }
+
+    // BYD battery's worker thread.
+    private static void runAfterChange() {
+        changeRunPending = false;
+        try {
+            Runnable task = liveTask;
+            int served = servedWhole, uploaded = uploadedWhole;
+            // Maps' timer may have uploaded the new percent meanwhile.
+            if (task == null || served >= uploaded || !BydBatteryPatch.isActive()) return;
+            if (!Utils.isContextSet() || !isOn(Utils.getContext())) return;
+            lastChangeRunAt = SystemClock.elapsedRealtime();
+            changeRuns++;
+            if (!changeLogged) {
+                changeLogged = true;
+                ReportLog.i(TAG, "Battery on the phone: " + uploaded + "% to " + served + "%, Maps uploads it now");
+            }
+            task.run();
+        } catch (Throwable error) {
+            if (!changeFailureLogged) {
+                changeFailureLogged = true;
+                ReportLog.w(TAG, "Battery on the phone: the upload after a change failed", error);
+            }
+        }
     }
 
     /**
@@ -72,7 +142,12 @@ public final class PhoneBattery {
             lastSoc = soc;
             checks++;
             if (share) shares++;
-            if (!Double.isNaN(soc)) withLevel++;
+            if (!Double.isNaN(soc)) {
+                withLevel++;
+                // Maps uploads the percent of the model it last read.
+                int served = servedWhole;
+                uploadedWhole = served >= 0 ? served : (int) soc;
+            }
             String state = !active ? "off (BYD battery not active)" : !share ? "off"
                     : Double.isNaN(soc) ? "on, Maps has no battery level yet and tries again later"
                     : "on, Maps' upload carries the battery";
@@ -234,6 +309,10 @@ public final class PhoneBattery {
                 .put("last_check_age_s", at == 0 ? JSONObject.NULL : (SystemClock.elapsedRealtime() - at) / 1000)
                 .put("last_shared", at == 0 ? JSONObject.NULL : lastShared)
                 .put("last_soc", at == 0 || Double.isNaN(soc) ? JSONObject.NULL : (int) soc)
+                .put("task_found", liveTask != null)
+                .put("change_uploads", changeRuns)
+                .put("last_change_upload_age_s", lastChangeRunAt == 0 ? JSONObject.NULL
+                        : (SystemClock.elapsedRealtime() - lastChangeRunAt) / 1000)
                 .put("model", new JSONObject()
                         .put("on", on)
                         .put("checks", modelChecks)

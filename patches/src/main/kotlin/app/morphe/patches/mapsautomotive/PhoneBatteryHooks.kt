@@ -30,13 +30,18 @@ import java.util.logging.Logger
 //   on true the task returns success without writing: PhoneBattery.modelPending, which throws instead while
 //   the switch is on, so the task's catch of everything returns Retry. The other two come before it adds the
 //   model's two parts: PhoneBattery.shareModel.
-// Maps' other checks of the permission are not touched.
+// Maps' other checks of the permission are not touched. Maps runs the live vehicle info task from a 2-minute timer; the
+// timer's runnable goes to PhoneBattery.liveTask, which runs it once more soon after the battery percent drops.
 // Required: a missing anchor, an ambiguity or an unknown layout fails the patch.
 
 private const val PHONE_BATTERY_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/PhoneBattery;"
 private const val LIVE_VEHICLE_INFO = "MAPS_LIVE_VEHICLE_INFO"
 private const val VEHICLE_ENERGY_MODEL = "MAPS_VEHICLE_ENERGY_MODEL"
 private const val CAR_ENERGY = "android.car.permission.CAR_ENERGY"
+private const val LIVE_TASK_NAME = "live-vehicle-info-task"
+private const val RUNNABLE = "Ljava/lang/Runnable;"
+private const val DURATION = "Lj\$/time/Duration;"
+private const val TIME_UNIT = "Ljava/util/concurrent/TimeUnit;"
 private val phoneLogger = Logger.getLogger("app.morphe.patches.mapsautomotive.PhoneBatteryHooks")
 
 private fun Instruction.text() = ((this as? ReferenceInstruction)?.reference as? StringReference)?.string
@@ -59,10 +64,103 @@ internal fun BytecodePatchContext.usePhoneBattery() {
     requireExtensionMethod(PHONE_BATTERY_CLASS, "share", listOf("Z"), "Z")
     requireExtensionMethod(PHONE_BATTERY_CLASS, "modelPending", listOf("Z"), "Z")
     requireExtensionMethod(PHONE_BATTERY_CLASS, "shareModel", listOf("Z"), "Z")
+    requireExtensionMethod(PHONE_BATTERY_CLASS, "liveTask", listOf(RUNNABLE), "V")
     val check = carEnergyCheck()
     useLiveVehicleInfo(check)
     useEnergyModelUpload(check)
+    keepLiveTask()
 }
+
+// Maps' timer for the live vehicle info task. The task's runnable (class R) holds the work name live-vehicle-info-task in
+// its run method and enqueues it through a static method of class G; G holds one static Duration, the period. The timer
+// is the one static call (Runnable, long, long, TimeUnit, ...) whose runnable was created as an R in the same method and
+// whose period is G's Duration in milliseconds. Before that call the runnable passes to PhoneBattery.liveTask, which keeps
+// it to run once more soon after the battery percent drops.
+private fun BytecodePatchContext.keepLiveTask() {
+    val enqueues = mutableListOf<Pair<Method, MethodReference>>()
+    classDefForEach { classDef ->
+        if (classDef.type.startsWith("Lapp/morphe/extension/")) return@classDefForEach
+        classDef.methods.forEach { method ->
+            val code = method.implementation?.instructions?.toList() ?: return@forEach
+            code.indices.filter { code[it].text() == LIVE_TASK_NAME }.forEach { index ->
+                val name = (code[index] as OneRegisterInstruction).registerA
+                val call = (index + 1 until minOf(code.size, index + 4)).firstOrNull {
+                    code[it].opcode in setOf(Opcode.INVOKE_STATIC, Opcode.INVOKE_STATIC_RANGE) && name in code[it].argumentRegisters()
+                } ?: throw PatchException("Unexpected $LIVE_TASK_NAME use in $method")
+                enqueues += method to code[call].invoked()!!
+            }
+        }
+    }
+    val (run, enqueue) = enqueues.singleOrNull()
+        ?: throw PatchException("Expected one use of $LIVE_TASK_NAME, found ${enqueues.map { it.first }}")
+    if (run.name != "run" || run.parameterTypes.isNotEmpty() || run.returnType != "V") {
+        throw PatchException("$LIVE_TASK_NAME is not enqueued from a runnable's run(): $run")
+    }
+    val runnableClass = run.definingClass
+    val scheduler = classDefByOrNull(enqueue.definingClass)
+        ?: throw PatchException("Missing class ${enqueue.definingClass} of $enqueue")
+    val periods = scheduler.fields.filter { AccessFlags.STATIC.isSet(it.accessFlags) && it.type == DURATION }
+    val period = periods.singleOrNull() ?: throw PatchException("Expected one static Duration in ${scheduler.type}, found ${periods.size}")
+    val periodField = "${scheduler.type}->${period.name}:$DURATION"
+
+    val sites = mutableListOf<Pair<Method, Int>>()
+    classDefForEach { classDef ->
+        if (classDef.type.startsWith("Lapp/morphe/extension/")) return@classDefForEach
+        classDef.methods.forEach { method ->
+            val code = method.implementation?.instructions?.toList() ?: return@forEach
+            if (code.none { it.opcode == Opcode.NEW_INSTANCE && it.typeOf() == runnableClass }) return@forEach
+            code.indices.filter { index ->
+                code[index].opcode in setOf(Opcode.INVOKE_STATIC, Opcode.INVOKE_STATIC_RANGE) &&
+                    code[index].invoked()?.parameterTypes?.map { it.toString() }?.take(4) == listOf(RUNNABLE, "J", "J", TIME_UNIT)
+            }.forEach { index ->
+                val arguments = code[index].argumentRegisters()
+                val created = code.lastWriteBefore(index, arguments[0])
+                if (created == null || code[created].opcode != Opcode.NEW_INSTANCE || code[created].typeOf() != runnableClass) {
+                    return@forEach
+                }
+                // The period: the second long, after the runnable and the delay.
+                val millis = code.lastWriteBefore(index, arguments[3])
+                val toMillis = millis?.let { code.getOrNull(it - 1) }
+                if (millis == null || code[millis].opcode != Opcode.MOVE_RESULT_WIDE || toMillis?.opcode != Opcode.INVOKE_VIRTUAL ||
+                    toMillis.invoked()?.signature() != "$DURATION->toMillis()J"
+                ) {
+                    return@forEach
+                }
+                val read = code.lastWriteBefore(millis - 1, toMillis.argumentRegisters().first())
+                if (read == null || code[read].opcode != Opcode.SGET_OBJECT || code[read].fieldOf()?.signature() != periodField) return@forEach
+                sites += method to index
+            }
+        }
+    }
+    val (timerMethod, call) = sites.singleOrNull()
+        ?: throw PatchException("Expected one timer of $runnableClass with the period $periodField, found ${sites.map { it.first }}")
+
+    val method = mutableMethodOf(timerMethod)
+    val instructions = method.implementation!!.instructions
+    if (instructions[call].location.labels.isNotEmpty()) {
+        throw PatchException("Unexpected live vehicle info timer $timerMethod: the call at $call is a branch target")
+    }
+    val runnable = instructions[call].argumentRegisters().first()
+    method.addInstructions(
+        call,
+        "invoke-static/range { v$runnable .. v$runnable }, $PHONE_BATTERY_CLASS->liveTask($RUNNABLE)V",
+    )
+    phoneLogger.info(
+        "Battery on the phone: the live vehicle info timer in $timerMethod at $call (runnable $runnableClass in v$runnable, " +
+            "period $periodField) passes its runnable to PhoneBattery.liveTask",
+    )
+}
+
+// The index of the last instruction before [before] that writes [register] (a wide write covers two registers).
+private fun List<Instruction>.lastWriteBefore(before: Int, register: Int): Int? =
+    (before - 1 downTo 0).firstOrNull { index ->
+        val instruction = this[index]
+        instruction.opcode.setsRegister() && (instruction as OneRegisterInstruction).registerA.let {
+            it == register || instruction.opcode.setsWideRegister() && it + 1 == register
+        }
+    }
+
+private fun Instruction.typeOf() = ((this as? ReferenceInstruction)?.reference as? TypeReference)?.type
 
 // The live vehicle info task: it reads the element type and calls the check, exactly once.
 private fun BytecodePatchContext.useLiveVehicleInfo(check: String) {

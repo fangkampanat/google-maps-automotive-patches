@@ -283,6 +283,12 @@ public final class BydBatteryPatch {
     }
 
     /** The dashboard percentage of the model Maps can read now, NaN while there is none (before a reading, or withdrawn). */
+    /** Runs [task] on the BYD battery worker thread after [delayMs]; false when there is no worker (not active). */
+    static boolean postToWorker(Runnable task, long delayMs) {
+        Handler handler = worker;
+        return handler != null && handler.postDelayed(task, delayMs);
+    }
+
     static double modelSoc() {
         return energyModel != null ? sampleSoc : Double.NaN;
     }
@@ -394,6 +400,8 @@ public final class BydBatteryPatch {
         byte[] model = energyModel;
         if (model == null) return null;
         lastMapsReadAt = SystemClock.elapsedRealtime();
+        // Battery on the phone: a lower whole percent in Maps' model makes Maps upload it soon (never throws).
+        PhoneBattery.modelRead(sampleSoc);
         return new ByteArrayInputStream(model);
     }
 
@@ -1209,12 +1217,12 @@ public final class BydBatteryPatch {
             phoneCaption = text(14, secondary, false);
             phoneCaption.setLineSpacing(0, 1.2f);
             phoneCaption.setText(thai
-                    ? "ขณะแอปทำงาน Maps ส่ง % แบตเข้าบัญชี Google ทุก 2 นาที และส่งโมเดลพลังงานของรถตอนเปิดแอปและทุก 2 ชั่วโมง"
+                    ? "ขณะแอปทำงาน Maps ส่ง % แบตเข้าบัญชี Google ทุก 2 นาทีและทุกครั้งที่ % ลดลง และส่งโมเดลพลังงานของรถตอนเปิดแอปและทุก 2 ชั่วโมง"
                     + " ไม่ส่งขณะจอรถดับ โมเดลมีความจุ น้ำหนัก กำลังสูงสุด อัตราสิ้นเปลือง และกราฟการชาร์จ"
                     + " ไม่มีระดับแบตหรืออุณหภูมิภายนอก Google Maps บนมือถือที่ลงชื่อบัญชีเดียวกันจึงแสดงแบตของรถคันนี้"
                     + " และแบตเมื่อถึงปลายทางได้"
-                    : "While it runs, Maps sends the battery percentage to your Google account every 2 minutes, and this car's"
-                    + " energy model when it starts and every 2 hours. Maps sends nothing while the car's screen is off. The model holds"
+                    : "While it runs, Maps sends the battery percentage to your Google account every 2 minutes and again when the"
+                    + " percentage drops, and this car's energy model when it starts and every 2 hours. Maps sends nothing while the car's screen is off. The model holds"
                     + " capacity, weight, power limits, consumption and charging curves, without the battery level or the outside"
                     + " temperature. Google Maps on a phone signed in to the same account can then show this car's battery and"
                     + " the battery on arrival.");
