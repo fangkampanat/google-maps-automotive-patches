@@ -76,9 +76,11 @@ public final class ColorScheme {
     static final int MINUTES_PER_DAY = 24 * 60;
     /** Auto (time) checks the clock this long after each minute starts. */
     static final long CLOCK_MARGIN_MS = 250;
-    static final String AUTO = "auto", TIME = "time", DAY = "day", NIGHT = "night";
+    /** SYSTEM follows the head unit's day/night (Maps' own value), for cars whose system mode follows the car's
+     *  day/night setting; Auto follows the low beam, which on some models is the only reliable signal. */
+    static final String AUTO = "auto", TIME = "time", SYSTEM = "system", DAY = "day", NIGHT = "night";
     /** In the chooser's order. */
-    private static final String[] CHOICES = {AUTO, TIME, DAY, NIGHT};
+    private static final String[] CHOICES = {AUTO, TIME, SYSTEM, DAY, NIGHT};
     /** Where the night value comes from (report and log). */
     static final String FROM_LIGHTS = "lights", FROM_TIME = "time", FROM_WAITING = "waiting", FROM_MAPS = "maps",
             FROM_CHOICE = "choice", FROM_OFF = "off";
@@ -204,11 +206,11 @@ public final class ColorScheme {
     }
 
     /**
-     * The night value: Maps' value when switched off; Day false, Night true; Auto (time) [clockNight]; Auto the low beam,
-     * else [held] (the value given last, while waiting for the first reading), else Maps' value.
+     * The night value: Maps' value when switched off or System; Day false, Night true; Auto (time) [clockNight]; Auto the
+     * low beam, else [held] (the value given last, while waiting for the first reading), else Maps' value.
      */
     static boolean decide(boolean on, String choice, boolean mapsValue, Boolean lowBeamOn, Boolean held, boolean clockNight) {
-        if (!on) return mapsValue;
+        if (!on || SYSTEM.equals(choice)) return mapsValue;
         if (DAY.equals(choice)) return false;
         if (NIGHT.equals(choice)) return true;
         if (TIME.equals(choice)) return clockNight;
@@ -219,6 +221,7 @@ public final class ColorScheme {
     /** Where {@link #decide}'s value comes from. */
     static String source(boolean on, String choice, Boolean lowBeamOn, boolean waiting) {
         if (!on) return FROM_OFF;
+        if (SYSTEM.equals(choice)) return FROM_MAPS;
         if (DAY.equals(choice) || NIGHT.equals(choice)) return FROM_CHOICE;
         if (TIME.equals(choice)) return FROM_TIME;
         if (lowBeamOn != null) return FROM_LIGHTS;
@@ -908,6 +911,7 @@ public final class ColorScheme {
     static String choiceLabel(String chosen, boolean thai, int[] window) {
         if (DAY.equals(chosen)) return thai ? "กลางวัน" : "Day";
         if (NIGHT.equals(chosen)) return thai ? "กลางคืน" : "Night";
+        if (SYSTEM.equals(chosen)) return thai ? "ตามระบบ (กลางวัน/กลางคืนของหน่วยแสดงผล)" : "System (head unit day/night)";
         if (TIME.equals(chosen)) {
             return thai ? "อัตโนมัติ (ตามเวลา) · กลางคืน " + span(window) : "Auto (time) · night " + span(window);
         }
