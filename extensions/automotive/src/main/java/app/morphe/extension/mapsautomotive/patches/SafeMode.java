@@ -52,11 +52,11 @@ public final class SafeMode {
     static final String UI_DENSITY = "ui_density", LANGUAGE = "language", DRIVER_SIDE = "driver_side", COLOR_SCHEME = "color_scheme",
             BUILDINGS_3D = "buildings_3d", CLUSTER_SATELLITE = "cluster_satellite",
             BYD_BATTERY = "byd_battery", SEND_TO_CAR = "send_to_car", LOCATION_LOCKOUT_DELAY = "location_lockout_delay",
-            BYD_NAVIGATION_VOLUME = "byd_navigation_volume", TTS_WARMUP = "tts_warmup", WINDOW_REFRESH = "window_refresh",
+            BYD_NAVIGATION_VOLUME = "byd_navigation_volume", NAVIGATION_SPEECH = "navigation_speech", TTS_WARMUP = "tts_warmup", WINDOW_REFRESH = "window_refresh",
             SETTINGS_ROWS = "settings_rows";
     /** Every switchable feature, in the report screen's order. */
     static final String[] FEATURES = {UI_DENSITY, LANGUAGE, DRIVER_SIDE, COLOR_SCHEME, CLUSTER_SATELLITE, BUILDINGS_3D,
-            BYD_BATTERY, SEND_TO_CAR, LOCATION_LOCKOUT_DELAY, BYD_NAVIGATION_VOLUME, TTS_WARMUP, WINDOW_REFRESH, SETTINGS_ROWS};
+            BYD_BATTERY, SEND_TO_CAR, LOCATION_LOCKOUT_DELAY, BYD_NAVIGATION_VOLUME, NAVIGATION_SPEECH, TTS_WARMUP, WINDOW_REFRESH, SETTINGS_ROWS};
     /** In the core patch; the others are in the APK only when their own patch was included. */
     private static final List<String> CORE = Arrays.asList(UI_DENSITY, LANGUAGE, DRIVER_SIDE, COLOR_SCHEME, CLUSTER_SATELLITE,
             TTS_WARMUP, WINDOW_REFRESH, SETTINGS_ROWS);
@@ -192,6 +192,7 @@ public final class SafeMode {
         if (included(SEND_TO_CAR)) names.add("Send to car");
         if (included(LOCATION_LOCKOUT_DELAY)) names.add("BYD location flicker fix");
         if (included(BYD_NAVIGATION_VOLUME)) names.add("BYD navigation volume");
+        if (included(NAVIGATION_SPEECH)) names.add("Navigation speech and TTS startup");
         return names;
     }
 
