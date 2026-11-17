@@ -1,32 +1,50 @@
 package app.morphe.patches.mapsautomotive
 
 import app.morphe.patcher.Fingerprint
-import app.morphe.patcher.extensions.InstructionExtensions.addInstruction
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
-import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
+import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
 import app.morphe.patcher.patch.BytecodePatchContext
 import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.patch.bytecodePatch
 import app.morphe.patcher.util.getReference
+import app.morphe.patcher.util.smali.ExternalLabel
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
-import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction30t
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.*
 import com.android.tools.smali.dexlib2.iface.reference.FieldReference
 import com.android.tools.smali.dexlib2.iface.reference.MethodReference
 import java.util.logging.Logger
 
+// Maps' TTS cache keeps two voices for spoken directions: the head unit's text-to-speech engine (local) and Google's
+// online voice. Its server settings choose the local voice only, the online voice only, or both, and while the online
+// voice is on, only a prompt the online voice made counts as ready. Where the online voice fails (one BYD Atto 3),
+// nothing is ready and Maps falls back to short canned prompts without street names.
+// While the navigation_speech switch is on, NavigationSpeech changes two choices:
+// - the factory: where Maps would make the online voice only, it makes both, as Maps' own "both" choice does; "local
+//   only" stays as it is;
+// - the readiness check: a prompt the local voice made counts as ready while the online voice's last result was a
+//   failure. The online voice reports each prompt through the completion listener the factory gives it; the
+//   listener's result method passes its success flag to NavigationSpeech.onlineResult first.
+// So where the online voice works, prompts stay Maps' own (no mixed voices). Maps still takes the online voice's
+// prompt first when it has one. Required: every anchor matches one known form.
+private const val NAVIGATION_SPEECH_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/NavigationSpeech;"
+
 @Suppress("unused")
 val navigationSpeechPatch = bytecodePatch(
-    name = "Navigation speech and TTS startup",
-    description = "Prefers synthesized navigation speech, keeping the existing audio fallback, and starts Google TTS when Maps opens.",
+    name = "Navigation speech",
+    description = "Lets Maps use the head unit's text-to-speech voice for spoken directions when Google's online voice " +
+        "has none ready, so you hear street names instead of short canned prompts.",
     default = true,
 ) {
     compatibleWith(compatibility)
     dependsOn(automotiveMicroGPatch)
 
     execute {
+        requireExtensionMethod(NAVIGATION_SPEECH_CLASS, "bothVoices", listOf("I"), "Z")
+        requireExtensionMethod(NAVIGATION_SPEECH_CLASS, "localReady", listOf("Ljava/lang/Object;", "Ljava/lang/Object;"), "Z")
+        requireExtensionMethod(NAVIGATION_SPEECH_CLASS, "onlineResult", listOf("Z"), "V")
         patchNavigationTts()
         IncludedFeatures.features += "navigation_speech"
     }
@@ -148,8 +166,18 @@ private val creationForms = listOf(
     CreationForm("moved result", "INVOKE_VIRTUAL MOVE_RESULT_OBJECT MOVE_OBJECT $CREATION_TAIL", result = 2),
 )
 
-/** Positions of the provider block that the caller's class-level checks use. */
-private class TtsProviderBlock(val forms: String, val fieldAt: Int, val cannedAt: Int, val merge: Int)
+/**
+ * Positions of the provider block that the caller's class-level checks and the hook use: [choiceAt] is the branch to
+ * the local-only creation, which tests [choice] (Maps' setting minus one: 0 local only, 1 online only, else its flags).
+ */
+private class TtsProviderBlock(
+    val forms: String,
+    val fieldAt: Int,
+    val cannedAt: Int,
+    val merge: Int,
+    val choiceAt: Int,
+    val choice: Int,
+)
 
 /**
  * Instruction-level recognition of the provider block: each sub-block must match exactly one known form, and every
@@ -203,10 +231,50 @@ private fun recognizeTtsProviderBlock(factory: Method, h: List<Instruction>, gat
         selection.skipDynamic.all { layout.target(gate + it) == fieldAt } &&
         layout.target(cannedAt + 2) == merge && layout.target(cannedOnly + 2) == merge,
         "provider branch relationships")
-    return TtsProviderBlock("${selection.name}; ${creation.name}", fieldAt, cannedAt, merge)
+    // The setting: move-result (raw), const/4 one = 1, if-nez raw, move raw = one, add-int/lit8 raw -1, if-eqz raw
+    // (local only), if-eq raw one (online only).
+    val choiceAt = gate + selection.toDynamicOnly
+    val choice = h[choiceAt].regs().single()
+    val one = h[gate + 5].regs().single()
+    layout.require(h[gate + 4].regs() == listOf(choice) &&
+        (h[gate + 5] as NarrowLiteralInstruction).narrowLiteral == 1 && one != choice &&
+        h[gate + selection.modeDefault].regs() == listOf(choice) &&
+        h[gate + selection.modeDefault + 1].regs() == listOf(choice, one) &&
+        h[choiceAt - 1].opcode == Opcode.ADD_INT_LIT8 && h[choiceAt - 1].regs() == listOf(choice, choice) &&
+        (h[choiceAt - 1] as NarrowLiteralInstruction).narrowLiteral == -1 &&
+        h[gate + selection.toCannedOnly].regs() == listOf(choice, one),
+        "provider choice register")
+    return TtsProviderBlock("${selection.name}; ${creation.name}", fieldAt, cannedAt, merge, choiceAt, choice)
 }
 
-/** Keep Maps' synthesis and fallback implementations; change only their selection. */
+/** Every register an instruction names, the third of a three-register instruction included. */
+private fun Instruction.namedRegisters(): List<Int> = when (this) {
+    is ThreeRegisterInstruction -> listOf(registerA, registerB, registerC)
+    else -> regs()
+}
+
+/**
+ * A local register that no instruction from [from] on names, for a value the hook at [from] writes and reads only
+ * there; null when there is none. Wide values after [from] are refused, since a pair's second register goes unnamed.
+ */
+private fun freeRegister(method: Method, code: List<Instruction>, from: Int, layout: TtsLayout): Int {
+    val tail = code.drop(from)
+    layout.require(tail.none { Regex("wide|long|double").containsMatchIn(it.opcode.toString()) }, "no wide values after the hook")
+    val parameters = method.parameterTypes.sumOf { if (it.toString() == "J" || it.toString() == "D") 2 else 1 } +
+        if (AccessFlags.STATIC.isSet(method.accessFlags)) 0 else 1
+    val named = tail.flatMap { it.namedRegisters() }.toSet()
+    val free = (0 until method.implementation!!.registerCount - parameters).firstOrNull { it !in named }
+    layout.require(free != null, "a free register for the hook")
+    return free!!
+}
+
+/** Whether a branch in [code] lands on [index], which would skip code inserted there. */
+private fun List<Instruction>.branchesTo(index: Int): Boolean = indices.any { i ->
+    this[i] is OffsetInstruction && this[i].opcode != Opcode.PACKED_SWITCH && this[i].opcode != Opcode.SPARSE_SWITCH &&
+        this[i].opcode != Opcode.FILL_ARRAY_DATA && target(i) == index
+}
+
+/** Keep Maps' synthesis, fallback and lookup order; change only which voices it makes and which prompts are ready. */
 internal fun BytecodePatchContext.patchNavigationTts() {
     val factory = uniqueMapsHook(Fingerprint(
         returnType = "V", parameters = emptyList(), strings = listOf("tts-temp"),
@@ -235,6 +303,7 @@ internal fun BytecodePatchContext.patchNavigationTts() {
         h[it].call()?.let { call -> call.parameterTypes.size == 2 &&
             classDefByOrNull(call.returnType)?.interfaces?.contains(providerType) == true } == true }
     if (creations.size != 2) throw PatchException("Missing unique TTS dynamic creation branches")
+    // The local voice's creation on the both-voices path (no completion listener), where the hook jumps.
     val create = creations.first()
     val factoryLayout = TtsLayout(factory, h, gate - 1..pairAt + 1)
     val block = recognizeTtsProviderBlock(factory, h, gate, create, pairAt)
@@ -255,107 +324,15 @@ internal fun BytecodePatchContext.patchNavigationTts() {
                 listOf(h[gate].call()!!.definingClass, h[fieldAt].field()!!.type) &&
             classDefBy(call.returnType).interfaces.contains(providerType) } == true,
         "cached provider pair")
+    val choiceAt = block.choiceAt
+    factoryLayout.require(!h.branchesTo(choiceAt), "no branch lands on the voice choice")
+    val factoryFree = freeRegister(factory, h, choiceAt, factoryLayout)
 
+    // The prompt type: the one method of the cache that reads a file with File.canRead() returns it.
     val resolver = owner.methods.singleOrNull { method ->
         method.parameterTypes.size == 1 && method.returnType.startsWith("L") &&
             method.implementation?.instructions?.count { it.call()?.toString() == "Ljava/io/File;->canRead()Z" } == 1
     } ?: throw PatchException("Missing unique navigation audio resolver")
-    val g = resolver.implementation!!.instructions.toList()
-    val resolverLayout = TtsLayout(resolver, g)
-    val loggedAudio = g.any { instruction -> instruction.opcode == Opcode.INVOKE_DIRECT_RANGE &&
-        instruction.call()?.let { it.name == "<init>" && it.definingClass == resolver.returnType &&
-            it.parameterTypes.size == 5 && it.parameterTypes[0] == "Ljava/io/File;" && it.parameterTypes[3] == "Z" } == true }
-    // R8 may merge the logged layout's three returns into one final return-object v2 (26.42).
-    val mergedReturn = loggedAudio && g.shape("""
-        INVOKE_DIRECT MOVE_RESULT CONST_4 CONST_4 IF_EQZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ
-        INVOKE_VIRTUAL MOVE_RESULT_OBJECT CHECK_CAST IGET_OBJECT IGET_OBJECT IGET_OBJECT INVOKE_STATIC
-        MOVE_RESULT_OBJECT IGET_OBJECT INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ CONST_4 MOVE GOTO
-        MOVE MOVE_OBJECT IF_NEZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT
-        INVOKE_INTERFACE MOVE_RESULT_OBJECT MOVE_OBJECT IF_EQZ INVOKE_VIRTUAL MOVE_RESULT
-        IF_EQZ INVOKE_VIRTUAL MOVE_RESULT IF_EQZ IGET_OBJECT IGET_OBJECT IGET_OBJECT NEW_INSTANCE
-        INVOKE_DIRECT_RANGE MOVE_OBJECT GOTO IGET_OBJECT NEW_INSTANCE SGET_OBJECT INVOKE_DIRECT CONST_STRING
-        INVOKE_VIRTUAL RETURN_OBJECT
-    """)
-    resolverLayout.require(!AccessFlags.STATIC.isSet(resolver.accessFlags) && resolver.implementation!!.tryBlocks.isEmpty() &&
-        if (loggedAudio) resolver.implementation!!.registerCount == 11 && (mergedReturn || g.shape("""
-            INVOKE_DIRECT MOVE_RESULT CONST_4 CONST_4 IF_EQZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ
-            INVOKE_VIRTUAL MOVE_RESULT_OBJECT CHECK_CAST IGET_OBJECT IGET_OBJECT IGET_OBJECT INVOKE_STATIC
-            MOVE_RESULT_OBJECT IGET_OBJECT INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ CONST_4 MOVE GOTO
-            MOVE MOVE_OBJECT IF_NEZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT
-            INVOKE_INTERFACE MOVE_RESULT_OBJECT MOVE_OBJECT IF_NEZ RETURN_OBJECT INVOKE_VIRTUAL MOVE_RESULT
-            IF_EQZ INVOKE_VIRTUAL MOVE_RESULT IF_EQZ IGET_OBJECT IGET_OBJECT IGET_OBJECT NEW_INSTANCE
-            INVOKE_DIRECT_RANGE RETURN_OBJECT IGET_OBJECT NEW_INSTANCE SGET_OBJECT INVOKE_DIRECT CONST_STRING
-            INVOKE_VIRTUAL RETURN_OBJECT
-        """)) else resolver.implementation!!.registerCount == 8 && g.shape("""
-        INVOKE_DIRECT MOVE_RESULT CONST_4 CONST_4 IF_EQZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ
-        INVOKE_VIRTUAL MOVE_RESULT_OBJECT CHECK_CAST IGET_OBJECT IGET_OBJECT IGET_OBJECT INVOKE_STATIC
-        MOVE_RESULT_OBJECT IGET_OBJECT INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ CONST_4 GOTO MOVE_OBJECT
-        IF_NEZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT IF_EQZ INVOKE_VIRTUAL MOVE_RESULT_OBJECT INVOKE_INTERFACE
-        MOVE_RESULT_OBJECT IF_NEZ GOTO INVOKE_VIRTUAL MOVE_RESULT IF_EQZ INVOKE_VIRTUAL MOVE_RESULT IF_EQZ
-        IGET_OBJECT IGET_OBJECT NEW_INSTANCE INVOKE_DIRECT RETURN_OBJECT
-    """), "audio resolver")
-    val dynamicAt = if (loggedAudio) 29 else 27
-    val lookupAt = dynamicAt + 2
-    val fieldsAt = if (mergedReturn) 41 else if (loggedAudio) 42 else 39
-    val constructorAt = if (mergedReturn) 45 else if (loggedAudio) 46 else 42
-    val dynamicGetter = g[dynamicAt].call()!!
-    val lookup = g[lookupAt].call()!!
-    val firstField = g[fieldsAt].field()!!
-    val secondField = g[fieldsAt + 1].field()!!
-    val eventField = if (loggedAudio) g[fieldsAt + 2].field()!! else null
-    val alertConstructor = g[constructorAt].call()!!
-    resolverLayout.require(dynamicGetter.definingClass == owner.type && dynamicGetter.parameterTypes.isEmpty() &&
-        dynamicGetter.returnType == providerType && dynamicGetter.same(g[dynamicAt - 3].call()) &&
-        lookup.definingClass == providerType && lookup.returnType == "Ljava/io/File;" &&
-        lookup.parameterTypes == resolver.parameterTypes &&
-        alertConstructor.definingClass == resolver.returnType && alertConstructor.name == "<init>" &&
-        alertConstructor.parameterTypes.map { it.toString() } ==
-            listOf("Ljava/io/File;", firstField.type, secondField.type, "Z") + listOfNotNull(eventField?.type) &&
-        firstField.definingClass == owner.type && secondField.definingClass == owner.type &&
-        if (loggedAudio) {
-            val receiver = resolver.implementation!!.registerCount - 2
-            eventField!!.definingClass == owner.type && g[dynamicAt].regs() == listOf(receiver) &&
-                g[dynamicAt + 1].regs() == listOf(0) && g[lookupAt].regs() == listOf(0, receiver + 1) &&
-                g[lookupAt + 1].regs() == listOf(0) && g[33].regs() == listOf(4, 0) &&
-                g[fieldsAt].regs() == listOf(5, receiver) && g[fieldsAt + 1].regs() == listOf(6, receiver) &&
-                g[fieldsAt + 2].regs() == listOf(8, receiver) && g[constructorAt].regs() == listOf(3, 4, 5, 6, 7, 8) &&
-                g[2].regs() == listOf(1) && (g[2] as NarrowLiteralInstruction).narrowLiteral == 0 &&
-                g[3].regs() == listOf(2) && (g[3] as NarrowLiteralInstruction).narrowLiteral == 0 &&
-                g[20].regs() == listOf(1) && (g[20] as NarrowLiteralInstruction).narrowLiteral == 1 &&
-                g[21].regs() == listOf(7, 1) && g[23].regs() == listOf(7, 1) && g[24].regs() == listOf(0, 2) &&
-                resolverLayout.target(4) == 23 && resolverLayout.target(7) == 23 && resolverLayout.target(19) == 21 &&
-                resolverLayout.target(22) == 25 && resolverLayout.target(25) == 33 && resolverLayout.target(28) == 33 &&
-                g[54].regs() == listOf(2) && if (mergedReturn) {
-                    // No file, unreadable file and constructed alert all reach 54; v2 holds null until 46.
-                    g[34].regs() == listOf(4) && resolverLayout.target(34) == 54 &&
-                        g[35].call()?.toString() == "Ljava/io/File;->exists()Z" && g[35].regs() == listOf(4) &&
-                        g[38].call()?.toString() == "Ljava/io/File;->canRead()Z" && g[38].regs() == listOf(4) &&
-                        g[37].regs() == g[36].regs() && g[40].regs() == g[39].regs() &&
-                        resolverLayout.target(37) == 48 && resolverLayout.target(40) == 48 &&
-                        g[44].regs() == listOf(3) && g[46].regs() == listOf(2, 3) && resolverLayout.target(47) == 54 &&
-                        g.indices.filter { g[it].opcode.setsRegister() &&
-                            ((g[it] as? OneRegisterInstruction)?.registerA == 2 ||
-                                g[it].opcode.setsWideRegister() && (g[it] as? OneRegisterInstruction)?.registerA == 1)
-                        } == listOf(3, 46)
-                } else resolverLayout.target(34) == 36 && resolverLayout.target(38) == 48 && resolverLayout.target(41) == 48 &&
-                    g[47].regs() == listOf(3) && g[35].regs() == listOf(2)
-        } else g[27].regs() == listOf(6) && g[28].regs() == listOf(0) && g[29].regs() == listOf(0, 7) &&
-            g[30].regs() == listOf(0) && g[39].regs() == listOf(7, 6) && g[40].regs() == listOf(6, 6) &&
-            g[42].regs() == listOf(1, 0, 7, 6, 2) &&
-            g[3].regs() == listOf(2) && (g[3] as NarrowLiteralInstruction).narrowLiteral == 0 &&
-            g[20].regs() == listOf(2) && (g[20] as NarrowLiteralInstruction).narrowLiteral == 1 &&
-            resolverLayout.target(23) == 31 && resolverLayout.target(26) == 31 &&
-            resolverLayout.target(35) == 43 && resolverLayout.target(38) == 43,
-        "resolver value flow / canned=true, dynamic=false")
-    val getter = owner.methods.single { dynamicGetter.same(it) }
-    val getterCode = getter.implementation!!.instructions.toList()
-    TtsLayout(getter, getterCode).require(getterCode.shape("INVOKE_DIRECT IGET_OBJECT IGET_OBJECT RETURN_OBJECT") &&
-        factory.same(getterCode[0].call()) && getterCode[1].field() == cacheField,
-        "dynamic getter initializes this factory")
-    val pairMethod = classDefBy(pairConstructor.definingClass).methods.single { pairConstructor.same(it) }
-    val pairBody = pairMethod.implementation!!.instructions.toList()
-    TtsLayout(pairMethod, pairBody).require(pairBody.any { it.opcode == Opcode.IPUT_OBJECT && it.field() == getterCode[2].field() &&
-        it.regs() == listOf(1, 0) }, "first pair component is dynamic")
 
     val ready = owner.methods.singleOrNull { method ->
         method.returnType == "Z" && method.parameterTypes.size == 1 && method.implementation?.instructions?.any {
@@ -380,6 +357,7 @@ internal fun BytecodePatchContext.patchNavigationTts() {
         resolver.same(requestBody[1].call()) && f[1].regs() == listOf(4) && f[3].regs() == listOf(4) &&
         f[2].regs() == listOf(0) && (f[2] as NarrowLiteralInstruction).narrowLiteral == 0 &&
         f[6].regs() == listOf(2) && (f[6] as NarrowLiteralInstruction).narrowLiteral == 1 &&
+        f[11].regs() == listOf(3) && f[11].field()?.type == f[13].field()?.type &&
         f[13].field()?.definingClass == resolver.returnType && f[13].regs() == listOf(4, 4) &&
         f[14].regs() == listOf(4, 3) && readyLayout.target(14) == 16 && if (mergedReady) {
             // Absent alert and tag mismatch return v0 (false); the other paths reach 15, which moves true into v0.
@@ -391,61 +369,59 @@ internal fun BytecodePatchContext.patchNavigationTts() {
         } else readyLayout.target(3) == 17 &&
             f[15].regs() == listOf(0) && f[16].regs() == listOf(2) && f[17].regs() == listOf(0),
         "readiness result flow", readyLayout)
+    // The tag check: the prompt's voice (v4) against the online voice (v3); "ready" is where true is returned.
+    val tagCheck = 14
+    val readyAt = if (mergedReady) 15 else 16
+    readyLayout.require(!f.branchesTo(tagCheck), "no branch lands on the voice tag check")
+    val readyFree = freeRegister(ready, f, tagCheck, readyLayout)
 
-    // All discovery/guards finish before mutation. Preserve synchronization, callbacks and cleanup.
-    factory.addInstruction(gate, BuilderInstruction30t(Opcode.GOTO_32,
-        factory.implementation!!.newLabelForIndex(create)))
-    val prefix = if (loggedAudio) """
-        invoke-virtual {p0}, $dynamicGetter
-        move-result-object v0
-        if-eqz v0, :original
-        invoke-interface {v0, p1}, $lookup
-        move-result-object v1
-        if-eqz v1, :original
-        invoke-virtual {v1}, Ljava/io/File;->exists()Z
-        move-result v2
-        if-eqz v2, :original
-        invoke-virtual {v1}, Ljava/io/File;->canRead()Z
-        move-result v2
-        if-eqz v2, :original
-        iget-object v2, p0, $firstField
-        iget-object v3, p0, $secondField
-        const/4 v4, 0x0
-        iget-object v5, p0, $eventField
-        new-instance v0, ${resolver.returnType}
-        invoke-direct/range {v0 .. v5}, $alertConstructor
-        return-object v0
-        :original
-        nop
-    """ else """
-        invoke-virtual {p0}, $dynamicGetter
-        move-result-object v0
-        if-eqz v0, :original
-        invoke-interface {v0, p1}, $lookup
-        move-result-object v1
-        if-eqz v1, :original
-        invoke-virtual {v1}, Ljava/io/File;->exists()Z
-        move-result v2
-        if-eqz v2, :original
-        invoke-virtual {v1}, Ljava/io/File;->canRead()Z
-        move-result v2
-        if-eqz v2, :original
-        iget-object v3, p0, $firstField
-        iget-object v4, p0, $secondField
-        const/4 v5, 0x0
-        new-instance v2, ${resolver.returnType}
-        invoke-direct {v2, v1, v3, v4, v5}, $alertConstructor
-        return-object v2
-        :original
-        nop
-    """
-    resolver.addInstructionsWithLabels(0, prefix.trimIndent())
-    // Both readable cached sources are ready. Keep their true source tag for playback/metrics.
-    ready.replaceInstruction(14, BuilderInstruction30t(Opcode.GOTO_32,
-        ready.implementation!!.newLabelForIndex(if (mergedReady) 15 else 16)))
+    // The completion listener: created before the cache (new-instance into the online creation's second argument, not
+    // written again before the gate) and the local creation's first parameter type. Its result method takes the
+    // resolver's request type and two flags; it starts with if-eqz on the first flag, and the path for true tells the
+    // cache that the prompt is done (check-cast to the cache, a call of its (request)V method, return).
+    val listenerRegister = h[cannedAt].regs()[1]
+    val listenerNew = (gate - 1 downTo 0).firstOrNull { h[it].opcode.setsRegister() &&
+        (h[it] as? OneRegisterInstruction)?.registerA == listenerRegister }
+    val listenerType = listenerNew?.let { h[it].getReference<com.android.tools.smali.dexlib2.iface.reference.TypeReference>()?.type }
+    factoryLayout.require(listenerNew != null && h[listenerNew].opcode == Opcode.NEW_INSTANCE && listenerType != null &&
+        dynamicFactory.parameterTypes[0].toString() == listenerType, "completion listener")
+    val requestType = resolver.parameterTypes[0].toString()
+    val results = classDefBy(listenerType!!).methods.filter { method ->
+        method.returnType == "V" && !AccessFlags.STATIC.isSet(method.accessFlags) &&
+            method.parameterTypes.map { it.toString() } == listOf(requestType, "Z", "Z")
+    }
+    if (results.size != 1) throw PatchException("Expected one result method ($requestType, Z, Z) in $listenerType, found ${results.size}")
+    val result = results.single()
+    val r = result.implementation?.instructions?.toList() ?: throw PatchException("No code in $result")
+    val resultLayout = TtsLayout(result, r, 0..minOf(r.size - 1, 8))
+    val okRegister = result.implementation!!.registerCount - 2
+    resultLayout.require(r.isNotEmpty() && r[0].opcode == Opcode.IF_EQZ && r[0].regs() == listOf(okRegister) &&
+        !r.branchesTo(0) && r.target(0).let { failure ->
+            failure > 1 && r.subList(1, failure).let { done ->
+                done.any { it.opcode == Opcode.CHECK_CAST &&
+                    it.getReference<com.android.tools.smali.dexlib2.iface.reference.TypeReference>()?.type == owner.type } &&
+                    done.any { it.call()?.let { call -> call.definingClass == owner.type && call.returnType == "V" &&
+                        call.parameterTypes.map { p -> p.toString() } == listOf(requestType) } == true } &&
+                    done.last().opcode == Opcode.RETURN_VOID
+            }
+        }, "result method: success first")
+
+    // All discovery and guards finish before mutation. Synchronization, callbacks and cleanup stay as they are.
+    mutableClassDefBy(listenerType).methods.single { result.same(it) }.addInstructions(0,
+        "invoke-static/range { v$okRegister .. v$okRegister }, $NAVIGATION_SPEECH_CLASS->onlineResult(Z)V")
+    factory.addInstructionsWithLabels(choiceAt, """
+        invoke-static { v${block.choice} }, $NAVIGATION_SPEECH_CLASS->bothVoices(I)Z
+        move-result v$factoryFree
+        if-nez v$factoryFree, :both
+    """.trimIndent(), ExternalLabel("both", factory.getInstruction(create)))
+    ready.addInstructionsWithLabels(tagCheck, """
+        invoke-static { v4, v3 }, $NAVIGATION_SPEECH_CLASS->localReady(Ljava/lang/Object;Ljava/lang/Object;)Z
+        move-result v$readyFree
+        if-nez v$readyFree, :ready
+    """.trimIndent(), ExternalLabel("ready", ready.getInstruction(readyAt)))
     Logger.getLogger("app.morphe.patches.mapsautomotive.NavigationTtsPatch").info(
-        "Navigation TTS: factory=$factory; forms=${block.forms}; dynamic=$dynamicFactory; resolver=$resolver; ready=$ready; " +
-            "prefer readable synthesized audio; preserve canned fallback and voice selection",
+        "Navigation speech: factory=$factory; forms=${block.forms}; choice v${block.choice} at $choiceAt, both " +
+            "voices at $create (v$factoryFree); ready=$ready at $tagCheck, true at $readyAt (v$readyFree); " +
+            "online results=$result (v$okRegister)",
     )
 }
-

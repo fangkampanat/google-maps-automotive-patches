@@ -441,6 +441,8 @@ final class ReportBuilder {
                 .put("color_scheme", ColorScheme.report(context))
                 .put("buildings_3d", SafeMode.included(SafeMode.BUILDINGS_3D) ? Buildings3d.report() : JSONObject.NULL)
                 .put("cluster_satellite", ClusterSatellite.report())
+                .put("home_work", SafeMode.included(SafeMode.HOME_WORK) ? HomeWorkShortcuts.report() : JSONObject.NULL)
+                .put("navigation_speech", SafeMode.included(SafeMode.NAVIGATION_SPEECH) ? NavigationSpeech.report() : JSONObject.NULL)
                 .put("window", window);
     }
 

@@ -336,10 +336,11 @@ public final class ReportPatch {
             texts.addView(sub);
             row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             if (ReportStore.SENT.equals(entry.state) && entry.id != null) {
-                // The issue QR code with this report's ID, also after its status dialog was closed.
+                // The QR code of this report's conversation page (a GitHub issue for an entry without a token), also
+                // after its status dialog was closed.
                 Button qr = new Button(views.themed, null, android.R.attr.buttonBarButtonStyle);
                 qr.setText(thai ? "แสดง QR" : "QR code");
-                qr.setOnClickListener(view -> showGitHub(host, entry.id, entry.patchesVersion, entry.appVersion, thai));
+                qr.setOnClickListener(view -> showReportQr(host, entry, thai));
                 row.addView(qr, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             }
             Button delete = new Button(views.themed, null, android.R.attr.buttonBarButtonStyle);
@@ -427,6 +428,86 @@ public final class ReportPatch {
         } catch (UnsupportedEncodingException impossible) {
             return false; // every Android has UTF-8
         }
+    }
+
+    /** The report server refuses this version's reports (ReportUploader.updateBeforeReport): update to [target] first. */
+    private static void showUpdateFirst(Activity host, String target, boolean thai) {
+        new AlertDialog.Builder(host)
+                .setTitle(thai ? "อัปเดตก่อน" : "Update first")
+                .setMessage(thai ? "เวอร์ชันนี้ส่งรายงานไม่ได้แล้ว อัปเดตเป็น " + target + " ก่อน แล้วค่อยส่งรายงาน"
+                        : "This version can no longer send reports. Update to " + target + " first, then send the report.")
+                .setPositiveButton(thai ? "อัปเดต" : "Update", (dialog, which) -> UpdateCheck.show(host, null))
+                .setNegativeButton(thai ? "ยกเลิก" : "Cancel", null)
+                .show();
+    }
+
+    /** A sent report's QR code: its conversation page, or a GitHub issue for an entry without a token. */
+    private static void showReportQr(Activity host, ReportStore.Entry entry, boolean thai) {
+        if (entry.deleteToken != null && configured()) showConversation(host, entry, thai);
+        else showGitHub(host, entry.id, entry.patchesVersion, entry.appVersion, thai);
+    }
+
+    /** The report's conversation page on the report server: the report ID and its token (the delete token). */
+    static String conversationUrl(String server, String id, String token, boolean thai) {
+        try {
+            return server + "/c/" + URLEncoder.encode(id, "UTF-8") + "?k=" + URLEncoder.encode(token, "UTF-8")
+                    + "&l=" + (thai ? "th" : "en");
+        } catch (UnsupportedEncodingException impossible) {
+            return null; // every Android has UTF-8
+        }
+    }
+
+    /**
+     * The QR code of the report's conversation page, for a phone to scan: there the reporter writes to the developer
+     * and reads the replies. No notification comes, so the text says to open the page again. A browser on this device
+     * gets a button too.
+     */
+    private static void showConversation(Activity host, ReportStore.Entry entry, boolean thai) {
+        String url = conversationUrl(URL, entry.id, entry.deleteToken, thai);
+        QrCode code = url == null ? null : QrCode.encode(url);
+        if (code == null) {
+            showGitHub(host, entry.id, entry.patchesVersion, entry.appVersion, thai);
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(thai ? "คุยกับผู้พัฒนา" : "Talk to the developer");
+        Views views = new Views(builder.getContext());
+        int screen = Math.min(host.getResources().getDisplayMetrics().widthPixels, host.getResources().getDisplayMetrics().heightPixels);
+        QrLayout layout = QrLayout.of(host, views, Math.min(views.px(280), screen / 2));
+        LinearLayout content = layout.sideBySide ? views.horizontal() : views.vertical();
+        content.setPadding(views.px(24), views.px(8), views.px(24), views.px(8));
+        ImageView image = new ImageView(views.themed);
+        image.setImageBitmap(qrBitmap(code, layout.qrSide));
+        image.setContentDescription(thai ? "QR code ของหน้าคุยเรื่องรายงานนี้" : "QR code of this report's conversation page");
+        LinearLayout.LayoutParams imageLayout = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        imageLayout.gravity = Gravity.CENTER_HORIZONTAL;
+        content.addView(image, imageLayout);
+        String text = (thai
+                ? "สแกนด้วยมือถือ เพื่อเปิดหน้าคุยเรื่องรายงานนี้ เขียนถึงผู้พัฒนาและอ่านคำตอบได้ที่นั่น"
+                + " ไม่มีการแจ้งเตือนเมื่อมีคำตอบ เก็บลิงก์ไว้หรือสแกน QR นี้อีกครั้งเพื่อดู"
+                : "Scan it with your phone to open this report's conversation page. Write to the developer and read the"
+                + " replies there. You get no notification when the developer replies, so keep the link or scan this code again.")
+                + "\n\n" + (thai ? "รหัสรายงาน " : "Report ID ") + entry.id
+                + "\n" + URL.replaceFirst("^https://", "");
+        TextView message = views.text(15, views.secondary, false);
+        message.setLineSpacing(0, 1.2f);
+        message.setText(text);
+        if (layout.sideBySide) {
+            message.setPadding(views.px(24), 0, 0, 0);
+            content.addView(message, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        } else {
+            message.setPadding(0, views.px(12), 0, 0);
+            content.addView(message);
+        }
+        ScrollView root = new ScrollView(views.themed);
+        root.addView(content);
+        builder.setView(root).setPositiveButton(thai ? "ปิดหน้าต่าง" : "Close", null);
+        Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        boolean browser = hasBrowser(host, view);
+        if (browser) builder.setNeutralButton(thai ? "เปิดในเบราว์เซอร์" : "Open in browser", (dialog, which) -> openLink(host, view, thai));
+        ReportLog.i(TAG, "conversation dialog: QR version " + code.version + ", mask " + code.mask
+                + (browser ? ", browser" : ", no browser") + ", " + layout.describe(views));
+        layout.apply(builder.show());
     }
 
     /**
@@ -670,10 +751,12 @@ public final class ReportPatch {
             case SafeMode.COLOR_SCHEME: return thai ? "รูปแบบสี (Color scheme)" : "Color scheme";
             case SafeMode.CLUSTER_SATELLITE: return thai ? "ดาวเทียมบนแผนที่หน้าปัด" : "Satellite on the cluster map";
             case SafeMode.BUILDINGS_3D: return thai ? "อาคาร 3 มิติ (3D buildings)" : "3D buildings";
+            case SafeMode.HOME_WORK: return thai ? "ปุ่มบ้านและที่ทำงาน" : "Home and Work shortcuts";
             case SafeMode.BYD_BATTERY: return thai ? "แบตเตอรี่รถ BYD (EV)" : "BYD battery (EV)";
             case SafeMode.SEND_TO_CAR: return "Send to car";
             case SafeMode.LOCATION_LOCKOUT_DELAY: return thai ? "แก้ตำแหน่งกะพริบของ BYD" : "BYD location flicker fix";
             case SafeMode.BYD_NAVIGATION_VOLUME: return thai ? "ระดับเสียงนำทางของ BYD" : "BYD navigation volume";
+            case SafeMode.NAVIGATION_SPEECH: return thai ? "เสียงนำทางจากเครื่องในรถ (TTS)" : "Navigation speech (head unit voice)";
             case SafeMode.TTS_WARMUP: return thai ? "เตรียมเสียงนำทางล่วงหน้า (TTS)" : "Voice guidance warm-up (TTS)";
             case SafeMode.WINDOW_REFRESH: return thai ? "ปรับเลย์เอาต์เมื่อแบ่งจอ" : "Split-screen layout refresh";
             default: return thai ? "แถวเสริมใน Settings" : "Extra rows in Settings";
@@ -688,10 +771,12 @@ public final class ReportPatch {
             case SafeMode.COLOR_SCHEME: return thai ? "ใช้สีของ Maps" : "Maps' colors";
             case SafeMode.CLUSTER_SATELLITE: return thai ? "แผนที่หน้าปัดไม่แสดงดาวเทียม" : "no satellite on the cluster map";
             case SafeMode.BUILDINGS_3D: return thai ? "ชั้นแผนที่ไม่มีอาคาร 3 มิติ" : "no 3D buildings in the map layers";
+            case SafeMode.HOME_WORK: return thai ? "ไอคอนใต้ช่องค้นหาเป็นหมวดของ Maps" : "the icons under the search box are Maps' categories";
             case SafeMode.BYD_BATTERY: return thai ? "ไม่ส่งแบตเตอรี่ให้ Maps ไม่มีหน้าจอ EV" : "no battery for Maps, no EV screens";
             case SafeMode.SEND_TO_CAR: return thai ? "รับทริปจากมือถือไม่ได้ และมือถือเห็นชื่อรถของ Maps" : "trips from the phone do not arrive, and phone Maps shows Maps' car name";
             case SafeMode.LOCATION_LOCKOUT_DELAY: return thai ? "หน้าจอตำแหน่งปิดกะพริบเมื่อ GPS หลุด" : "the location lockout flashes when GPS drops";
             case SafeMode.BYD_NAVIGATION_VOLUME: return thai ? "เสียงนำทางใช้ระดับเสียงเพลง" : "voice guidance follows the media volume";
+            case SafeMode.NAVIGATION_SPEECH: return thai ? "ถ้าเสียงออนไลน์ของ Google ใช้ไม่ได้ อาจไม่มีชื่อถนน" : "without Google's online voice, street names may be missing";
             case SafeMode.TTS_WARMUP: return thai ? "เสียงนำทางแรกอาจเป็นเสียงสำรอง" : "the first prompt may use the canned voice";
             case SafeMode.WINDOW_REFRESH: return thai ? "การ์ดอาจใหญ่เกินหลังแบ่งจอ" : "cards may stay too large after a split-screen change";
             default: return thai ? "Settings ของ Maps ไม่มีแถวเสริม" : "Maps' Settings without the extra rows";
@@ -764,18 +849,26 @@ public final class ReportPatch {
                 .show();
         Context app = host.getApplicationContext();
         Utils.runOnBackgroundThread(() -> {
+            // The server first: a version it refuses gets "Update first" before the user writes anything.
+            String update = ReportUploader.updateBeforeReport();
             ReportBuilder.Draft built = null;
             Throwable failure = null;
-            try {
-                built = ReportBuilder.build(app, screen);
-            } catch (Throwable error) {
-                failure = error;
+            if (update == null) {
+                try {
+                    built = ReportBuilder.build(app, screen);
+                } catch (Throwable error) {
+                    failure = error;
+                }
             }
             ReportBuilder.Draft draft = built;
             Throwable error = failure;
             host.runOnUiThread(() -> {
                 if (!progress.isShowing() || host.isFinishing() || host.isDestroyed()) return;
                 progress.dismiss();
+                if (update != null) {
+                    showUpdateFirst(host, update, thai);
+                    return;
+                }
                 if (draft == null) {
                     ReportLog.w(TAG, "report not built", error);
                     message(host, thai ? "สร้างรายงานไม่ได้ ลองอีกครั้ง" : "The report could not be made. Try again.");
@@ -1040,7 +1133,7 @@ public final class ReportPatch {
         });
     }
 
-    // Sending, then the report ID in large text and a button for the QR code of an issue with it.
+    // Sending, then the report ID in large text and a button for the QR code of its conversation page.
     private static void showStatus(Activity host, String key, boolean thai) {
         AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(getSettingsTitle(host));
         Views views = new Views(builder.getContext());
@@ -1056,7 +1149,7 @@ public final class ReportPatch {
         content.addView(id);
         content.addView(note);
         builder.setView(content).setPositiveButton(thai ? "ปิดหน้าต่าง" : "Close", null)
-                .setNeutralButton(thai ? "QR สำหรับ GitHub" : "GitHub QR code", null);
+                .setNeutralButton(thai ? "QR สำหรับคุยกับผู้พัฒนา" : "QR code to talk", null);
         AlertDialog dialog = builder.create();
         // Creates the buttons now, so the QR button is hidden or shown before the first frame.
         dialog.create();
@@ -1067,7 +1160,7 @@ public final class ReportPatch {
         // Its own listener keeps the status open under the QR code.
         if (qr != null) qr.setOnClickListener(view -> {
             ReportStore.Entry shown = sentEntry[0];
-            if (shown != null) showGitHub(host, shown.id, shown.patchesVersion, shown.appVersion, thai);
+            if (shown != null) showReportQr(host, shown, thai);
         });
         Runnable refresh = () -> {
             ReportStore.Entry entry = null;
@@ -1082,10 +1175,15 @@ public final class ReportPatch {
             } else if (sent) {
                 status.setText(thai ? "ส่งแล้ว · รหัสรายงาน" : "Sent · report ID");
                 id.setText(entry.id);
-                note.setText(thai ? "ผู้พัฒนาตอบกลับผ่านรายงานนี้ไม่ได้ ถ้าต้องการคำตอบ กด QR สำหรับ GitHub แล้วสแกนด้วยมือถือ"
-                        + " จะได้ issue ที่กรอกรหัสนี้ไว้ให้ รายงานลบอัตโนมัติใน 14 วัน"
-                        : "The developer cannot reply to a report. For an answer, tap GitHub QR code and scan it with your"
-                        + " phone to open an issue with this ID filled in. The report is deleted automatically after 14 days.");
+                note.setText(entry.deleteToken != null
+                        ? (thai ? "อยากเล่าเพิ่มหรืออ่านคำตอบของผู้พัฒนา กด QR สำหรับคุยกับผู้พัฒนา แล้วสแกนด้วยมือถือ"
+                        + " รายงานลบอัตโนมัติ 14 วันหลังข้อความล่าสุด"
+                        : "To add details or read the developer's reply, tap QR code to talk and scan it with your phone."
+                        + " The server deletes the report 14 days after its last message.")
+                        : (thai ? "กด QR สำหรับคุยกับผู้พัฒนา แล้วสแกนด้วยมือถือ จะได้ issue ที่ GitHub ที่กรอกรหัสนี้ไว้ให้"
+                        + " รายงานลบอัตโนมัติใน 14 วัน"
+                        : "Tap QR code to talk and scan it with your phone to open a GitHub issue with this ID filled in."
+                        + " The report is deleted automatically after 14 days."));
             } else if (ReportStore.QUEUED.equals(entry.state)) {
                 status.setText(entry.attempts == 0 ? (thai ? "กำลังส่ง…" : "Sending…") : stateText(entry, thai));
                 note.setText(thai ? "แอปส่งเองเมื่อมีอินเทอร์เน็ตขณะเปิดแอปอยู่ ปิดหน้าต่างนี้ได้"

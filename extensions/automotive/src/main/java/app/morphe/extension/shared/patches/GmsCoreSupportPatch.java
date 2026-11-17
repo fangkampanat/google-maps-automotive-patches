@@ -19,7 +19,10 @@ import android.app.SearchManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.Signature;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
@@ -32,6 +35,7 @@ import androidx.annotation.Nullable;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.security.MessageDigest;
 import java.util.Locale;
 
 import app.morphe.extension.mapsautomotive.patches.BydBatteryPatch;
@@ -117,13 +121,24 @@ public class GmsCoreSupportPatch {
                                                       String dialogMessage,
                                                       String positiveButtonText,
                                                       DialogInterface.OnClickListener onPositiveClickListener) {
+        showDialog(context, text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"), dialogMessage,
+                positiveButtonText, onPositiveClickListener, null);
+    }
+
+    // [onShown]: run when the dialog is on screen (possibly again after the app comes back), or null.
+    private static void showDialog(Activity context,
+                                   String title,
+                                   String dialogMessage,
+                                   String positiveButtonText,
+                                   DialogInterface.OnClickListener onPositiveClickListener,
+                                   @Nullable Runnable onShown) {
         // Use a delay to allow the activity to finish initializing.
         // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
         Utils.runOnMainThreadDelayed(() -> {
             // Create the custom dialog.
             Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
                     context,
-                    text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"), // Title.
+                    title, // Title.
                     dialogMessage, // Message.
                     null, // No EditText.
                     positiveButtonText, // OK button text.
@@ -141,7 +156,7 @@ public class GmsCoreSupportPatch {
             dialog.setCancelable(true);
 
             // Show the dialog
-            Utils.showDialog(context, dialog);
+            Utils.showDialog(context, dialog, true, onShown == null ? null : shown -> onShown.run());
         }, 100);
     }
 
@@ -183,6 +198,9 @@ public class GmsCoreSupportPatch {
                 open(context, getGmsCoreDownload());
                 return;
             }
+
+            // Another GmsCore build under MicroG-RE's package name: warned once per build.
+            if (warnOtherProvider(context)) return;
 
             // Check if GmsCore is whitelisted from battery optimizations.
             if (isAndroidAutomotive(context)) {
@@ -246,6 +264,67 @@ public class GmsCoreSupportPatch {
             }
         } catch (Exception ex) {
             Logger.printException(() -> "checkGmsCore failure", ex);
+        }
+    }
+
+    /** SHA-256 of MicroG-RE's signing certificate (its releases 7.2.1 to 7.3.1). */
+    static final String MICROG_RE_SIGNER = "0b6c9515afb195fac59601696ba0a7907a0b217ccf720b43148427ccf64343e7";
+    private static final String CHECKS = "morphe_gms_check", PROVIDER_WARNED = "provider_warned";
+
+    /**
+     * The build to warn about, or null: [signer] (SHA-256, hex) is not MicroG-RE's and [warned] is not this build.
+     * Plain Java, so it can be checked off the device.
+     */
+    @Nullable
+    static String otherProvider(@Nullable String signer, @Nullable String versionName, long versionCode, @Nullable String warned) {
+        if (signer == null || MICROG_RE_SIGNER.equals(signer)) return null;
+        String build = versionName + " " + versionCode + " " + signer.substring(0, Math.min(16, signer.length()));
+        return build.equals(warned) ? null : build;
+    }
+
+    @Nullable
+    static String sha256(@Nullable Signature[] signatures) {
+        if (signatures == null || signatures.length == 0 || signatures[0] == null) return null;
+        try {
+            StringBuilder hex = new StringBuilder();
+            for (byte b : MessageDigest.getInstance("SHA-256").digest(signatures[0].toByteArray())) {
+                hex.append(String.format(Locale.ROOT, "%02x", b));
+            }
+            return hex.toString();
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Maps Car is built and checked with MicroG-RE. Another GmsCore under the same package name (an older ReVanced
+     * GmsCore, for one) has made Maps crash at start, so the user hears once per installed build which one to use.
+     * True when the warning is shown.
+     */
+    @SuppressWarnings("deprecation")
+    private static boolean warnOtherProvider(Activity context) {
+        try {
+            PackageInfo info = context.getPackageManager().getPackageInfo(GMS_CORE_PACKAGE_NAME, PackageManager.GET_SIGNATURES);
+            SharedPreferences checks = context.getSharedPreferences(CHECKS, Context.MODE_PRIVATE);
+            String build = otherProvider(sha256(info.signatures), info.versionName, info.getLongVersionCode(),
+                    checks.getString(PROVIDER_WARNED, null));
+            if (build == null) return false;
+            Logger.printInfo(() -> "GmsCore is not MicroG-RE: " + build);
+            String version = info.versionName != null ? info.versionName : "?";
+            String message = text(context,
+                    "แอปนี้ใช้กับ MicroG-RE 7.3.0 แต่ MicroG ที่ติดตั้งอยู่เป็นตัวอื่น (" + version + ") แอปอาจปิดเองหรือ"
+                            + " ใช้บัญชี Google ไม่ได้ ให้ถอน MicroG ตัวนี้ออก แล้วติดตั้ง MicroG-RE 7.3.0 (ขั้นตอนติดตั้งข้อ 1)",
+                    "This app is made for MicroG-RE 7.3.0, but another MicroG is installed (" + version + "). The app may"
+                            + " close by itself or lose the Google account. Uninstall this MicroG, then install MicroG-RE 7.3.0"
+                            + " (Install step 1).");
+            // Marked as warned once the dialog is on screen: a start that ends before it shows warns again next time.
+            showDialog(context, text(context, "MicroG ไม่ใช่ MicroG-RE", "This MicroG is not MicroG-RE"), message,
+                    text(context, "ตกลง", "OK"), (dialog, id) -> { },
+                    () -> checks.edit().putString(PROVIDER_WARNED, build).apply());
+            return true;
+        } catch (Exception ex) {
+            Logger.printException(() -> "provider check failure", ex);
+            return false;
         }
     }
 

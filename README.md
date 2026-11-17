@@ -15,6 +15,7 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 - **Driver side**: Puts Maps' cards on the driver's side.
 - **Color scheme**: Auto (headlights) uses night colors only while the low beam is on, since BYD keeps the head unit in night mode. Auto (time) uses night colors between two times you set, 18:00 to 06:00 by default. System uses the head unit's own day/night mode, for cars that switch it with the car's setting.
 - **3D buildings** in the map layer menu.
+- **Home and Work** replace the third and fourth icons under the search box (shopping and cafes on the Dolphin). A charging or gas station icon in either place stays. Tap Home or Work to start the route to the place saved in your Google account.
 - **Cluster map**: If Maps also draws a map on the instrument cluster, it gets the same colors and map layers (satellite, 3D buildings) as the main map. One BYD Seal owner checked this; the Dolphin's cluster doesn't show Maps.
 
 ### BYD battery (EV)
@@ -29,6 +30,7 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 
 - **Send to car** from phone Google Maps on the same Google account, with a status check.
 - **BYD navigation volume** for spoken directions.
+- **Navigation speech**: When Google's online voice has no prompt ready, Maps uses the head unit's text-to-speech voice, so you still hear street names. Contributed by a BYD Atto 3 owner.
 - **Updates**: A daily check for a new release, on by default. It sends only the patches version. Maps from the ready-made APK in BYD Files can install the next release after you confirm.
 - **Report Maps** icon for problem reports, and a safe mode.
 
@@ -87,7 +89,9 @@ If patching fails at **Rebuilding APK** on Windows set to Thai, start Morphe Des
 ## Reporting problems
 
 1. Open the red **Report Maps** icon and tap **Send**. If the app hangs on a grey screen, send the report before you restart the head unit.
-2. Tap **GitHub QR code** and scan it with your phone to open an issue with the report ID.
+2. Tap **QR code to talk** and scan it with your phone. On that page you can add details and read the developer's reply. You get no notification, so open the page again later.
+
+Only the latest release can send reports. The release before it can still send them for 3 days.
 
 Reports leave out your location, e-mail, VIN and push tokens, and are deleted after 14 days. If no report can be sent, attach the crash file from `/sdcard/Documents/Morphe/` to an [issue](https://github.com/fangkampanat/google-maps-automotive-patches/issues).
 
@@ -96,7 +100,7 @@ Reports leave out your location, e-mail, VIN and push tokens, and are deleted af
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.1.9](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.9) · 8 patches
+[v0.2.0-dev.1](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.2.0-dev.1) · 9 patches
 
 Eligible versions: Any version.
 
@@ -108,7 +112,8 @@ Eligible versions: Any version.
 | BYD location flicker fix | Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout. |  |
 | BYD navigation volume | Plays Maps' spoken directions on BYD's navigation volume instead of the media volume. |  |
 | Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 with MicroG-RE 7.3.0, named "Maps" unless the App name option says otherwise. Adds UI density, language, driver side and color scheme settings, a problem report, an update check and a safe mode. The cluster map uses the main map's colors and satellite layer. | • App name |
-| Navigation speech and TTS startup | Prefers synthesized navigation speech, keeping the existing audio fallback, and starts Google TTS when Maps opens. |  |
+| Home and Work shortcuts | Turns the third and fourth icons under the search box into Home and Work, but keeps a charging or gas station icon there. Tap Home or Work to start the route to the place saved in your Google account. |  |
+| Navigation speech | Lets Maps use the head unit's text-to-speech voice for spoken directions when Google's online voice has none ready, so you hear street names instead of short canned prompts. |  |
 | Send to car | Lets phone Maps send a trip to the head unit through MicroG-RE (push routes, the notification service identity and maps.app.goo.gl links). Adds a Send to car row in Settings: a status check and the car's name in phone Maps (default "Vehicle 1"). |  |
 
 <!-- PATCHES_END -->
