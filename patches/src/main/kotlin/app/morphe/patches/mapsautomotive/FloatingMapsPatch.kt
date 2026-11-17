@@ -40,7 +40,8 @@ val floatingMapsPatch = bytecodePatch(
     name = "Floating Maps window",
     description = "Shows the next turn, the map and the arrival time in a small window at the bottom right during guidance, " +
         "when the camera, another app or Home covers Maps. Drag the window to move it, or drag its top-left corner to resize it. " +
-        "It needs \"Display over other apps\"; a Settings row opens that page and also turns the window off.",
+        "On BYD it hides in P and R. It needs \"Display over other apps\"; its Settings row opens that page, turns the window on " +
+        "or off and sets its opacity.",
     default = true,
 ) {
     compatibleWith(compatibility)

@@ -135,10 +135,10 @@ public class GmsCoreSupportPatch {
             return;
         }
         String withButton = message + "\n\n" + text(context,
-                "หรือกด ทำให้เลย เมื่อ Android ถามเรื่องการแก้ไขข้อบกพร่องผ่าน USB ให้กด อนุญาต และไม่ต้องติ๊ก อนุญาตเสมอ"
-                        + " แล้ว Maps จะสั่งคำสั่งนี้ครั้งเดียวผ่าน ADB ของรถ",
-                "Or tap Do it now. When Android asks \"Allow USB debugging?\", tap Allow and leave \"Always allow\" unticked."
-                        + " Maps then runs this command once through the car's own ADB.");
+                "หรือกด ทำให้เลย เมื่อ Android ถามเรื่องการแก้ไขข้อบกพร่องผ่าน USB ให้ติ๊ก อนุญาตเสมอ แล้วกด อนุญาต"
+                        + " Maps จะสั่งคำสั่งนี้ผ่าน ADB ของรถเอง",
+                "Or tap Do it now. When Android asks \"Allow USB debugging?\", tick \"Always allow\" and tap Allow."
+                        + " Maps then runs this command through the car's own ADB.");
         Utils.runOnMainThreadDelayed(() -> {
             Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
                     context,

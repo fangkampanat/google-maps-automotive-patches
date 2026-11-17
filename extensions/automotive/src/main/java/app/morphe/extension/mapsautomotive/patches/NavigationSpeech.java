@@ -3,6 +3,8 @@ package app.morphe.extension.mapsautomotive.patches;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import app.morphe.extension.shared.Utils;
+
 /**
  * Navigation speech (patch "Navigation speech", switch "navigation_speech").
  * <p>
@@ -49,6 +51,7 @@ public final class NavigationSpeech {
             if (choice != mapsChoice) {
                 choice = mapsChoice;
                 ReportLog.i(TAG, "Maps' voices: " + describe(mapsChoice) + (both ? "; both voices instead" : ""));
+                saveState();
             }
             return both;
         } catch (Throwable error) {
@@ -83,6 +86,7 @@ public final class NavigationSpeech {
             if (onlineFailing == made) {
                 onlineFailing = !made;
                 ReportLog.i(TAG, made ? "Google's online voice works again" : "Google's online voice failed a prompt");
+                saveState();
             }
         } catch (Throwable error) {
             // Counting only.
@@ -102,6 +106,11 @@ public final class NavigationSpeech {
             ReportLog.i(TAG, "Navigation speech " + (feature ? "on" : "off (switched off)"));
         }
         return feature;
+    }
+
+    // The report screen's process reads the main process's last saved state: saved when this changes.
+    private static void saveState() {
+        if (Utils.isContextSet()) ReportBuilder.saveSnapshot(Utils.getContext(), true);
     }
 
     private static String describe(int mapsChoice) {

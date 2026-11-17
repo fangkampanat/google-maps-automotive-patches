@@ -16,7 +16,7 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 - **Color scheme**: Auto (headlights) uses night colors only while the low beam is on, since BYD keeps the head unit in night mode. Auto (time) uses night colors between two times you set, 18:00 to 06:00 by default. System uses the head unit's own day/night mode, for cars that switch it with the car's setting.
 - **3D buildings** in the map layer menu.
 - **Home and Work** replace the third and fourth icons under the search box (shopping and cafes on the Dolphin). A charging or gas station icon in either place stays. Tap Home or Work to start the route to the place saved in your Google account.
-- **Floating Maps window**: During guidance, when the camera, another app or Home covers Maps, a small window at the bottom right shows the next turn, the map and the arrival time. Drag it to move it, or drag its top-left corner to resize it. It needs "Display over other apps". Allow it from the Floating Maps window row in Maps' Settings.
+- **Floating Maps window**: During guidance, when the camera, another app or Home covers Maps, a small window at the bottom right shows the next turn, the map and the arrival time. Drag it to move it, or drag its top-left corner to resize it. On BYD it hides in P and R, so it does not cover the rear camera. It needs "Display over other apps". The Floating Maps window row in Maps' Settings opens that page, turns the window on or off and sets its opacity.
 - **Cluster map**: If Maps also draws a map on the instrument cluster, it gets the same colors and map layers (satellite, 3D buildings) as the main map. One BYD Seal owner checked this; the Dolphin's cluster doesn't show Maps.
 
 ### BYD battery (EV)
@@ -63,7 +63,7 @@ Tested on a BYD Dolphin (DiLink 3.0, Android 10) with MicroG-RE 7.3.0.
    adb shell dumpsys deviceidle whitelist +app.revanced.android.gms
    ```
 
-   If you skip it and the head unit's wireless ADB is on, Maps offers **Do it now** at its first start. Tap it, then tap **Allow** on Android's prompt and leave "Always allow" unticked.
+   If you skip it and the head unit's wireless ADB is on, Maps offers **Do it now** at its first start. Tap it, then tick "Always allow" on Android's prompt and tap **Allow**. Maps keeps its own ADB key in the head unit's keystore and runs only this command with it.
 
 3. Turn OFF **MicroG RE** in BYD's **Disable Autostart**.
 4. Open MicroG-RE, grant its permissions and sign in.
@@ -104,7 +104,7 @@ Reports leave out your location, e-mail, VIN and push tokens, and are deleted af
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.2.0-dev.2](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.2.0-dev.2) · 11 patches
+[v0.2.0-dev.3](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.2.0-dev.3) · 11 patches
 
 Eligible versions: Any version.
 
@@ -116,7 +116,7 @@ Eligible versions: Any version.
 | BYD battery (EV) | Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). On by default on the tested BYD Dolphin and on BYD model ids 128 and 138, where owners' reports show it working; off with an "untested" notice on other BYD models and on DiLink 5. A Settings row turns it on or off and sets the battery to arrive with at charging stops and at the destination. By default Maps also sends the battery percentage and this car's energy model to your Google account, so Google Maps on your phone can show the battery; a switch there turns that off. |  |
 | BYD location flicker fix | Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout. |  |
 | BYD navigation volume | Plays Maps' spoken directions on BYD's navigation volume instead of the media volume. |  |
-| Floating Maps window | Shows the next turn, the map and the arrival time in a small window at the bottom right during guidance, when the camera, another app or Home covers Maps. Drag the window to move it, or drag its top-left corner to resize it. It needs "Display over other apps"; a Settings row opens that page and also turns the window off. |  |
+| Floating Maps window | Shows the next turn, the map and the arrival time in a small window at the bottom right during guidance, when the camera, another app or Home covers Maps. Drag the window to move it, or drag its top-left corner to resize it. On BYD it hides in P and R. It needs "Display over other apps"; its Settings row opens that page, turns the window on or off and sets its opacity. |  |
 | Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 with MicroG-RE 7.3.0, named "Maps" unless the App name option says otherwise. Adds UI density, language, driver side and color scheme settings, a problem report, an update check and a safe mode. The cluster map uses the main map's colors and satellite layer. | • App name |
 | Home and Work shortcuts | Turns the third and fourth icons under the search box into Home and Work, but keeps a charging or gas station icon there. Tap Home or Work to start the route to the place saved in your Google account. |  |
 | Navigation speech | Lets Maps use the head unit's text-to-speech voice for spoken directions when Google's online voice has none ready, so you hear street names instead of short canned prompts. |  |
