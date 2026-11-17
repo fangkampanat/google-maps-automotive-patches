@@ -39,6 +39,7 @@ import java.security.MessageDigest;
 import java.util.Locale;
 
 import app.morphe.extension.mapsautomotive.patches.BydBatteryPatch;
+import app.morphe.extension.mapsautomotive.patches.CarAdb;
 import app.morphe.extension.mapsautomotive.patches.UiDensityPatch;
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.ResourceType;
@@ -123,6 +124,38 @@ public class GmsCoreSupportPatch {
                                                       DialogInterface.OnClickListener onPositiveClickListener) {
         showDialog(context, text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"), dialogMessage,
                 positiveButtonText, onPositiveClickListener, null);
+    }
+
+    // The BYD battery dialog. With the car's own ADB answering: "Do it now" runs the command there (CarAdb), "Later"
+    // closes; without it: the command and OK, as before.
+    private static void showBydBatteryDialog(Activity context, String message, boolean carAdb) {
+        if (context.isFinishing() || context.isDestroyed()) return;
+        if (!carAdb) {
+            showBatteryOptimizationDialog(context, message, text(context, "ตกลง", "OK"), (dialog, id) -> { });
+            return;
+        }
+        String withButton = message + "\n\n" + text(context,
+                "หรือกด ทำให้เลย เมื่อ Android ถามเรื่องการแก้ไขข้อบกพร่องผ่าน USB ให้กด อนุญาต และไม่ต้องติ๊ก อนุญาตเสมอ"
+                        + " แล้ว Maps จะสั่งคำสั่งนี้ครั้งเดียวผ่าน ADB ของรถ",
+                "Or tap Do it now. When Android asks \"Allow USB debugging?\", tap Allow and leave \"Always allow\" unticked."
+                        + " Maps then runs this command once through the car's own ADB.");
+        Utils.runOnMainThreadDelayed(() -> {
+            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                    context,
+                    text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"),
+                    withButton,
+                    null, // No EditText.
+                    text(context, "ทำให้เลย", "Do it now"),
+                    () -> CarAdb.whitelist(context, GMS_CORE_PACKAGE_NAME, WHITELIST_COMMAND),
+                    null, // No Cancel button.
+                    text(context, "ไว้ทีหลัง", "Later"),
+                    () -> { },
+                    true // Dismiss dialog when onNeutralClick.
+            );
+            Dialog dialog = dialogPair.first;
+            dialog.setCancelable(true);
+            Utils.showDialog(context, dialog, true, null);
+        }, 100);
     }
 
     // [onShown]: run when the dialog is on screen (possibly again after the app comes back), or null.
@@ -225,9 +258,15 @@ public class GmsCoreSupportPatch {
                                     + " not work. Tap Open settings and allow it, or run once over ADB (Install step 1):"))
                             + "\n" + WHITELIST_COMMAND;
                     // On a BYD the system's dialog opens but does not whitelist MicroG-RE (DiLink 3): only the ADB
-                    // command does, so the button only closes. Other cars get the system's dialog and the command.
+                    // command does. When the car's own ADB answers (owners turn on its wireless ADB to install), the
+                    // dialog offers to run it there; otherwise the button only closes. Other cars get the system's
+                    // dialog and the command.
                     if (byd) {
-                        showBatteryOptimizationDialog(context, message, text(context, "ตกลง", "OK"), (dialog, id) -> { });
+                        Utils.runOnBackgroundThread(() -> {
+                            boolean carAdb = CarAdb.portOpen();
+                            Logger.printInfo(() -> "Car's ADB on port 5555: " + (carAdb ? "answers" : "closed"));
+                            Utils.runOnMainThread(() -> showBydBatteryDialog(context, message, carAdb));
+                        });
                     } else {
                         showBatteryOptimizationDialog(context, message, text(context, "เปิดหน้าตั้งค่า", "Open settings"),
                                 (dialog, id) -> openGmsCoreDisableBatteryOptimizationsIntent(context));

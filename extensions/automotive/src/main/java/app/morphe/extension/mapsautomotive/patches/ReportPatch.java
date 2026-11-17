@@ -752,9 +752,11 @@ public final class ReportPatch {
             case SafeMode.CLUSTER_SATELLITE: return thai ? "ดาวเทียมบนแผนที่หน้าปัด" : "Satellite on the cluster map";
             case SafeMode.BUILDINGS_3D: return thai ? "อาคาร 3 มิติ (3D buildings)" : "3D buildings";
             case SafeMode.HOME_WORK: return thai ? "ปุ่มบ้านและที่ทำงาน" : "Home and Work shortcuts";
+            case SafeMode.FLOATING_MAPS: return thai ? "หน้าต่าง Maps ลอย" : "Floating Maps window";
             case SafeMode.BYD_BATTERY: return thai ? "แบตเตอรี่รถ BYD (EV)" : "BYD battery (EV)";
             case SafeMode.SEND_TO_CAR: return "Send to car";
             case SafeMode.LOCATION_LOCKOUT_DELAY: return thai ? "แก้ตำแหน่งกะพริบของ BYD" : "BYD location flicker fix";
+            case SafeMode.GPS_INTERVAL: return thai ? "ขอ GPS ทุก 500 ms บน BYD" : "BYD GPS interval";
             case SafeMode.BYD_NAVIGATION_VOLUME: return thai ? "ระดับเสียงนำทางของ BYD" : "BYD navigation volume";
             case SafeMode.NAVIGATION_SPEECH: return thai ? "เสียงนำทางจากเครื่องในรถ (TTS)" : "Navigation speech (head unit voice)";
             case SafeMode.TTS_WARMUP: return thai ? "เตรียมเสียงนำทางล่วงหน้า (TTS)" : "Voice guidance warm-up (TTS)";
@@ -772,9 +774,11 @@ public final class ReportPatch {
             case SafeMode.CLUSTER_SATELLITE: return thai ? "แผนที่หน้าปัดไม่แสดงดาวเทียม" : "no satellite on the cluster map";
             case SafeMode.BUILDINGS_3D: return thai ? "ชั้นแผนที่ไม่มีอาคาร 3 มิติ" : "no 3D buildings in the map layers";
             case SafeMode.HOME_WORK: return thai ? "ไอคอนใต้ช่องค้นหาเป็นหมวดของ Maps" : "the icons under the search box are Maps' categories";
+            case SafeMode.FLOATING_MAPS: return thai ? "ไม่มีหน้าต่าง Maps เมื่อแอปอื่นบัง" : "no Maps window when another app covers Maps";
             case SafeMode.BYD_BATTERY: return thai ? "ไม่ส่งแบตเตอรี่ให้ Maps ไม่มีหน้าจอ EV" : "no battery for Maps, no EV screens";
             case SafeMode.SEND_TO_CAR: return thai ? "รับทริปจากมือถือไม่ได้ และมือถือเห็นชื่อรถของ Maps" : "trips from the phone do not arrive, and phone Maps shows Maps' car name";
             case SafeMode.LOCATION_LOCKOUT_DELAY: return thai ? "หน้าจอตำแหน่งปิดกะพริบเมื่อ GPS หลุด" : "the location lockout flashes when GPS drops";
+            case SafeMode.GPS_INTERVAL: return thai ? "Maps ขอ GPS ทุก 100 ms ระหว่างนำทาง" : "Maps asks for GPS every 100 ms during guidance";
             case SafeMode.BYD_NAVIGATION_VOLUME: return thai ? "เสียงนำทางใช้ระดับเสียงเพลง" : "voice guidance follows the media volume";
             case SafeMode.NAVIGATION_SPEECH: return thai ? "ถ้าเสียงออนไลน์ของ Google ใช้ไม่ได้ อาจไม่มีชื่อถนน" : "without Google's online voice, street names may be missing";
             case SafeMode.TTS_WARMUP: return thai ? "เสียงนำทางแรกอาจเป็นเสียงสำรอง" : "the first prompt may use the canned voice";
