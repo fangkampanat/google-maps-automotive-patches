@@ -204,6 +204,37 @@
       ]
     },
     {
+      "name": "Navigation speech and TTS startup",
+      "description": "Prefers synthesized navigation speech, keeping the existing audio fallback, and starts Google TTS when Maps opens.",
+      "default": true,
+      "dependencies": [
+        "BytecodePatch"
+      ],
+      "compatiblePackages": [
+        {
+          "packageName": "com.google.android.apps.maps",
+          "name": "Google Maps Automotive",
+          "description": null,
+          "apkFileType": "APK_REQUIRED",
+          "appIconColor": "#4285F4",
+          "signatures": [
+            "1975b2f17177bc89a5dff31f9e64a6cae281a53dc1d1d59b1d147fe1c82afa00",
+            "d22cc500299fb22873a01a010de1c82fbe4d061119b94814dd301dab50cb7678"
+          ],
+          "targets": [
+            {
+              "version": null,
+              "versionCodes": null,
+              "isExperimental": false,
+              "minSdk": 29,
+              "description": null
+            }
+          ]
+        }
+      ],
+      "options": []
+    },
+    {
       "name": "Send to car",
       "description": "Lets phone Maps send a trip to the head unit through MicroG-RE (push routes, the notification service identity and maps.app.goo.gl links). Adds a Send to car row in Settings: a status check and the car's name in phone Maps (default \"Vehicle 1\").",
       "default": true,

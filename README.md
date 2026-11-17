@@ -96,7 +96,7 @@ Reports leave out your location, e-mail, VIN and push tokens, and are deleted af
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.1.9](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.9) · 7 patches
+[v0.1.9](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.1.9) · 8 patches
 
 Eligible versions: Any version.
 
@@ -108,6 +108,7 @@ Eligible versions: Any version.
 | BYD location flicker fix | Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout. |  |
 | BYD navigation volume | Plays Maps' spoken directions on BYD's navigation volume instead of the media volume. |  |
 | Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 with MicroG-RE 7.3.0, named "Maps" unless the App name option says otherwise. Adds UI density, language, driver side and color scheme settings, a problem report, an update check and a safe mode. The cluster map uses the main map's colors and satellite layer. | • App name |
+| Navigation speech and TTS startup | Prefers synthesized navigation speech, keeping the existing audio fallback, and starts Google TTS when Maps opens. |  |
 | Send to car | Lets phone Maps send a trip to the head unit through MicroG-RE (push routes, the notification service identity and maps.app.goo.gl links). Adds a Send to car row in Settings: a status check and the car's name in phone Maps (default "Vehicle 1"). |  |
 
 <!-- PATCHES_END -->
