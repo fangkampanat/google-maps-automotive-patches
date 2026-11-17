@@ -48,7 +48,7 @@ Tested on a BYD Dolphin (DiLink 3.0, Android 10) with MicroG-RE 7.3.0.
 
 ## Requirements
 
-- [Morphe Desktop](https://github.com/MorpheApp/morphe-desktop) 2.1.0 or newer, with Java 21
+- [Morphe Desktop](https://github.com/MorpheApp/morphe-desktop) 2.2.0 or newer, with Java 21
 - The original **Google Maps (Android Automotive) 26.10.120003.E** APK (version code `1068833413`), for example from APKMirror. Other versions are untested.
 - An ARM64 BYD head unit with Android 10 or newer, 4 KiB memory pages and ADB access for one command during install
 
@@ -82,8 +82,6 @@ Tested on a BYD Dolphin (DiLink 3.0, Android 10) with MicroG-RE 7.3.0.
 3. Drop the original APK onto **Drop APK here** and click **Continue**.
 4. Optional: To rename the app, set **App name** under **Configure options** of "Google Maps Automotive for MicroG-RE".
 5. Click **Patch**. Leave **Continue on error** off, and don't patch in a synced folder such as Google Drive.
-
-If patching fails at **Rebuilding APK** on Windows set to Thai, start Morphe Desktop with [`_Start-Morphe.cmd`](https://github.com/fangkampanat/gmaps-patches#verifyexception-at-rebuilding-apk-windows) and patch again.
 
 ### 3. Maps on the head unit
 
