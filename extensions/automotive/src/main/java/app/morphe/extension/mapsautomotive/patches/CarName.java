@@ -200,7 +200,7 @@ public final class CarName {
 
     /** Injection point: the row title. */
     public static String getSettingsTitle(Context context) {
-        return "Send to car";
+        return UiDensityPatch.isThai(context) ? "ส่งไปยังรถ" : "Send to car";
     }
 
     /** The name editor's title. */
@@ -212,8 +212,8 @@ public final class CarName {
     public static String getSettingsSummary(Context context) {
         boolean thai = UiDensityPatch.isThai(context);
         if (!SafeMode.on(context, SafeMode.SEND_TO_CAR)) {
-            return (thai ? "ใช้ชื่อของ Maps ชั่วคราว · สวิตช์ใน " : "Maps' name for now · switch in ")
-                    + ReportPatch.reportPlace(context, thai);
+            return (thai ? "ใช้ชื่อของ Maps ชั่วคราว (เปิดคืนใน " : "Maps' name for now (back on in ")
+                    + ReportPatch.reportPlace(context, thai) + ")";
         }
         String name = storedName(context);
         String shown = name != null ? name : mapsName(context) + (thai ? " (ชื่อของ Maps)" : " (Maps' name)");

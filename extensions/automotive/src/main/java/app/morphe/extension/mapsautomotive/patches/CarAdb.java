@@ -9,6 +9,7 @@ import android.os.PowerManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.widget.Toast;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -47,7 +48,9 @@ import app.morphe.extension.shared.Utils;
  * DiLink 3 the system's battery screens do not exist, and only ADB can whitelist MicroG-RE. When the port answers,
  * the BYD MicroG-RE dialog offers "Do it now": this client connects to 127.0.0.1:5555 and runs one fixed command,
  * {@code dumpsys deviceidle whitelist +<MicroG-RE>}, then closes. The result is read back with
- * PowerManager.isIgnoringBatteryOptimizations and kept for the problem report.
+ * PowerManager.isIgnoringBatteryOptimizations and kept for the problem report. The BYD battery dialog uses the same
+ * client for one read-only command, {@code base64} of BYD's trip log ({@link #readFile}): at Maps' start only quietly,
+ * with a key adbd already trusts, so Android never asks.
  * <p>
  * The key is Maps Car's own, made once in the Android Keystore, which never lets it out of the head unit's keystore.
  * The client signs adbd's token with it first; when adbd does not trust it yet, it sends the public key and Android
@@ -75,7 +78,9 @@ public final class CarAdb {
             0x04, 0x14};
     private static final String RESULT_FILE = "morphe_gms_whitelist.json";
 
-    private static volatile boolean running, canceled;
+    // One ADB session at a time: the whitelist or a trip-log read (they share the sockets and Cancel).
+    private static final java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean();
+    private static volatile boolean canceled;
     private static volatile Socket socket, retry;
 
     private CarAdb() {
@@ -101,8 +106,14 @@ public final class CarAdb {
      * thread, then a dialog with the result ([adbCommand] is shown again when it did not work).
      */
     public static void whitelist(Activity activity, String gmsPackage, String adbCommand) {
-        if (running || activity.isFinishing() || activity.isDestroyed()) return;
+        if (activity.isFinishing() || activity.isDestroyed()) return;
         boolean thai = UiDensityPatch.isThai(activity);
+        if (!running.compareAndSet(false, true)) {
+            // A trip-log read (BYD battery) holds the connection for a few seconds.
+            Toast.makeText(activity, thai ? "Maps กำลังใช้ ADB ของรถ ลองอีกครั้งในอีกสักครู่" : "Maps is using the car's ADB. Try again in a moment.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
         AlertDialog waiting;
         try {
             waiting = new AlertDialog.Builder(activity)
@@ -116,16 +127,16 @@ public final class CarAdb {
                     .setNegativeButton(thai ? "ยกเลิก" : "Cancel", (dialog, which) -> cancel())
                     .show();
         } catch (RuntimeException error) {
+            running.set(false);
             ReportLog.w(TAG, "MicroG-RE whitelist not started", error);
             return;
         }
-        running = true;
         canceled = false;
         Context app = activity.getApplicationContext();
         Utils.runOnBackgroundThread(() -> {
             Attempt attempt = run(app, gmsPackage);
             new Handler(Looper.getMainLooper()).post(() -> {
-                running = false;
+                running.set(false);
                 try {
                     if (waiting.isShowing()) waiting.dismiss();
                 } catch (RuntimeException ignored) {
@@ -153,6 +164,8 @@ public final class CarAdb {
         String output = "";
         String auth = "";
         String key = "";
+        /** Why the last signed connection got no CNXN (signedConnection); empty before one failed. */
+        String refused = "";
         int reconnects;
         boolean whitelisted;
         final long at = System.currentTimeMillis();
@@ -213,9 +226,15 @@ public final class CarAdb {
 
     // Maps Car's key in the Android Keystore, made on first use; a key in memory when the keystore fails.
     private static Key key() throws GeneralSecurityException {
+        return key(true);
+    }
+
+    // With [create] false: the keystore key only if it exists, else null (no key made, no key in memory).
+    private static Key key(boolean create) throws GeneralSecurityException {
         try {
             KeyStore store = KeyStore.getInstance(KEYSTORE);
             store.load(null);
+            if (!create && !store.containsAlias(KEY_ALIAS)) return null;
             if (!store.containsAlias(KEY_ALIAS)) {
                 KeyPairGenerator generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, KEYSTORE);
                 generator.initialize(new KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_SIGN)
@@ -235,6 +254,8 @@ public final class CarAdb {
             if (publicKey.getModulus().bitLength() != KEY_BITS) throw new GeneralSecurityException("keystore key not 2048-bit");
             return new Key(privateKey, publicKey, "keystore");
         } catch (Exception error) {
+            // Quiet: a keystore that fails is not "no key yet"; the reason reaches the report.
+            if (!create) throw new GeneralSecurityException("keystore unavailable: " + oneLine(String.valueOf(error)), error);
             ReportLog.w(TAG, "MicroG-RE whitelist: no keystore key, a key in memory for this run", error);
             return memoryKey();
         }
@@ -256,9 +277,57 @@ public final class CarAdb {
         return signature.sign();
     }
 
+    /**
+     * BYD's trip log for BYD battery (BydTripLog): the one read-only command {@code base64 <path>} for that one file,
+     * its decoded bytes (at most [maxBytes]). Quiet ([quiet], at Maps' start): only with Maps' existing key and only if
+     * adbd already trusts it (an owner's Always allow, for example from Do it now); the client never sends its public
+     * key, so Android never asks. Otherwise it signs in as {@link #whitelist} does and Android may ask "Allow USB
+     * debugging?". Blocks up to a few seconds quiet, about a minute otherwise: not on the main thread. Throws when the
+     * port is closed, the key is missing or not trusted (quiet), the command fails, or the output is not base64.
+     */
+    static byte[] readFile(String path, int maxBytes, boolean quiet) throws IOException, GeneralSecurityException {
+        if (!running.compareAndSet(false, true)) throw new IOException("ADB busy");
+        canceled = false;
+        Attempt attempt = new Attempt();
+        try {
+            Key key = key(!quiet);
+            if (key == null) throw new IOException("no ADB key yet");
+            Socket connection;
+            if (quiet) {
+                if (!portOpen()) throw new IOException("ADB port closed");
+                connection = signedConnection(key, attempt);
+                if (connection == null) throw new IOException(attempt.refused.isEmpty() ? "ADB key not trusted (not asked)" : attempt.refused);
+                attempt.auth = "signed_connection";
+            } else {
+                connection = signIn(key, attempt);
+            }
+            // base64 writes 76 characters and a line break per 57 bytes.
+            int cap = maxBytes / 57 * 78 + 4096;
+            byte[] text = execBytes(connection, "base64 " + path, attempt, cap);
+            ReportLog.i(TAG, "car ADB read of " + path + ": " + text.length + " characters, key " + key.kind
+                    + (attempt.auth.isEmpty() ? "" : ", signed in by " + attempt.auth));
+            if (text.length >= cap) throw new IOException("larger than " + maxBytes + " bytes");
+            // The shell's errors come in the same stream ("No such file or directory"): anything but base64 is one.
+            for (byte b : text) {
+                boolean base64 = b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '+' || b == '/'
+                        || b == '=' || b == '\n' || b == '\r';
+                if (!base64) throw new IOException(oneLine(new String(text, 0, Math.min(text.length, 200), StandardCharsets.UTF_8)));
+            }
+            return java.util.Base64.getMimeDecoder().decode(text);
+        } finally {
+            socket = null;
+            retry = null;
+            running.set(false);
+        }
+    }
+
     // The ADB session: sign in, open one shell stream, read it. [attempt].result names the step reached when one fails.
     private static String exec(Key key, String command, Attempt attempt) throws IOException, GeneralSecurityException {
-        Socket connection = signIn(key, attempt);
+        return new String(execBytes(signIn(key, attempt), command, attempt, MAX_OUTPUT), StandardCharsets.UTF_8).trim();
+    }
+
+    // One shell stream on a signed-in [connection], which it closes.
+    private static byte[] execBytes(Socket connection, String command, Attempt attempt, int maxOutput) throws IOException {
         // Cancel closes it during the command too.
         socket = connection;
         try {
@@ -276,14 +345,16 @@ public final class CarAdb {
                     remote = message.arg0;
                 } else if (message.command == A_WRTE) {
                     remote = message.arg0;
-                    if (output.size() < MAX_OUTPUT) output.write(message.data, 0, Math.min(message.data.length, MAX_OUTPUT - output.size()));
+                    output.write(message.data, 0, Math.min(message.data.length, maxOutput - output.size()));
+                    // At the cap: stop reading (the connection closes below); the caller sees a full buffer.
+                    if (output.size() >= maxOutput) break;
                     write(out, A_OKAY, LOCAL_ID, remote, null);
                 } else if (message.command == A_CLSE) {
                     write(out, A_CLSE, LOCAL_ID, message.arg0, null);
                     break;
                 }
             }
-            return new String(output.toByteArray(), StandardCharsets.UTF_8).trim();
+            return output.toByteArray();
         } finally {
             close(connection);
             socket = null;
@@ -341,7 +412,7 @@ public final class CarAdb {
                             write(out, A_AUTH, AUTH_RSAPUBLICKEY, 0, publicKeyPayload(key.publicKey));
                             asking = true;
                             nextTry = now + RECONNECT_EVERY_MS;
-                            ReportLog.i(TAG, "MicroG-RE whitelist over the car's ADB: waiting for Allow");
+                            ReportLog.i(TAG, "car ADB: waiting for Allow");
                         }
                     }
                 } else {
@@ -350,7 +421,7 @@ public final class CarAdb {
                 if (asking && System.currentTimeMillis() >= nextTry) {
                     nextTry = System.currentTimeMillis() + RECONNECT_EVERY_MS;
                     attempt.reconnects++;
-                    Socket trusted = signedConnection(key);
+                    Socket trusted = signedConnection(key, attempt);
                     if (trusted != null) {
                         attempt.auth = "allow_reconnect";
                         return trusted;
@@ -363,12 +434,16 @@ public final class CarAdb {
         }
     }
 
-    // A new connection signed with the key: returned when adbd trusts the key, else closed and null. It never sends the
+    // A new connection signed with the key: returned when adbd trusts the key, else closed and null, with the reason in
+    // [attempt].refused (a second token: the key is not trusted; otherwise the connection failed). It never sends the
     // public key, so Android does not ask again.
-    private static Socket signedConnection(Key key) {
+    private static Socket signedConnection(Key key, Attempt attempt) {
         Socket connection = null;
         try {
-            if (canceled) return null;
+            if (canceled) {
+                attempt.refused = "canceled";
+                return null;
+            }
             connection = open();
             retry = connection;
             connection.setSoTimeout(CONNECT_TIMEOUT_MS);
@@ -383,12 +458,17 @@ public final class CarAdb {
                     return done;
                 }
                 if (message.command == A_AUTH && message.arg0 == AUTH_TOKEN) {
-                    if (signed) return null;
+                    if (signed) {
+                        attempt.refused = "ADB key not trusted (not asked)";
+                        return null;
+                    }
                     write(out, A_AUTH, AUTH_SIGNATURE, 0, sign(key, message.data));
                     signed = true;
                 }
             }
         } catch (IOException | GeneralSecurityException | RuntimeException error) {
+            // A refused or dropped connection, a timeout: not the key (a collision with another ADB client looks like this).
+            attempt.refused = "ADB connection failed: " + oneLine(String.valueOf(error));
             return null;
         } finally {
             close(connection);

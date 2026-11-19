@@ -286,17 +286,18 @@ public final class DriverSide {
 
     /** Injection point: the row title. */
     public static String getSettingsTitle(Context context) {
-        return UiDensityPatch.isThai(context) ? "ฝั่งพวงมาลัย (Driver side)" : "Driver side";
+        return UiDensityPatch.isThai(context) ? "ฝั่งพวงมาลัย" : "Driver side";
     }
 
     /** Injection point: the row subtitle, the current choice. */
     public static String getSettingsSummary(Context context) {
         boolean thai = UiDensityPatch.isThai(context);
         if (!SafeMode.on(context, SafeMode.DRIVER_SIDE)) {
-            return (thai ? "ใช้ฝั่งของ Maps ชั่วคราว · สวิตช์ใน " : "Maps' side for now · switch in ")
-                    + ReportPatch.reportPlace(context, thai);
+            return (thai ? "ใช้ฝั่งของ Maps ชั่วคราว (เปิดคืนใน " : "Maps' side for now (back on in ")
+                    + ReportPatch.reportPlace(context, thai) + ")";
         }
-        return describedLabel(context, stored(context));
+        // The row names the side; where the cards go is in the dialog's choices.
+        return choiceLabel(context, stored(context));
     }
 
     /**

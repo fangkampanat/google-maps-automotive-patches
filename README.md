@@ -10,13 +10,13 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 
 ### Screen
 
-- **UI density**: Fits the car layout to split screen.
+- **Display size**: Fits the car layout to split screen.
 - **Language**: English or Thai for this app, whatever the head unit's language.
 - **Driver side**: Puts Maps' cards on the driver's side.
-- **Color scheme**: Auto (headlights) uses night colors only while the low beam is on, since BYD keeps the head unit in night mode. Auto (time) uses night colors between two times you set, 18:00 to 06:00 by default. System uses the head unit's own day/night mode, for cars that switch it with the car's setting.
+- **Day/night colors**: Auto (headlights) uses night colors only while the low beam is on, since BYD keeps the head unit in night mode. Auto (time) uses night colors between two times you set, 18:00 to 06:00 by default. System uses the head unit's own day/night mode, for cars that switch it with the car's setting.
 - **3D buildings** in the map layer menu.
 - **Home and Work** replace the third and fourth icons under the search box (shopping and cafes on the Dolphin). A charging or gas station icon in either place stays. Tap Home or Work to start the route to the place saved in your Google account.
-- **Floating Maps window**: During guidance, when the camera, another app or Home covers Maps, a small window at the bottom right shows the next turn, the map and the arrival time. Drag it to move it, or drag its top-left corner to resize it. On BYD it hides in P and R, so it does not cover the rear camera. It needs "Display over other apps". The Floating Maps window row in Maps' Settings opens that page, turns the window on or off and sets its opacity.
+- **Floating window**: During guidance, when the camera, another app or Home covers Maps, a small window at the bottom right shows the next turn, the map and the arrival time. Tap it to open Maps. Drag it to move it, or drag its top-left corner to resize it. On BYD it shows only in D (S and M count as D), so it never covers the rear camera. After P, R or N it comes back once the car has been in D for 30 seconds. It needs "Display over other apps". The Floating window row in Maps' Settings opens that page, turns the window on or off, keeps it off Home and sets its size and opacity.
 - **Cluster map**: If Maps also draws a map on the instrument cluster, it gets the same colors and map layers (satellite, 3D buildings) as the main map. One BYD Seal owner checked this; the Dolphin's cluster doesn't show Maps.
 
 ### BYD battery (EV)
@@ -25,6 +25,10 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 - Choose the battery to arrive with at charging stops, and see the battery health.
 - **Battery on the phone**, on by default: Maps sends the battery percentage to your Google account every 2 minutes while it runs and again when the percentage drops, and this car's energy model (capacity, weight, consumption and charging curves, without the battery level) when it starts and every 2 hours. Google Maps on a phone signed in to the same account can then show this car's battery and the battery on arrival. A switch in the BYD battery dialog turns it off.
 - On cars with BYD's energy table, Maps plans with that table adjusted for your car from the A/C draw and guided routes.
+- If your car uses much more or less than BYD's table, guided routes can now adjust the model from 0.6 to 2 times the table, once the speed records agree.
+- Above 90% each percent of a BYD battery holds more energy. Maps' battery percentages, now and on arrival, follow the dashboard there, so a trip that starts above 90% no longer shows an arrival a few points low.
+- The dialog's km per 1% comes from the percents you drove.
+- **BYD's trip log**: Maps reads the car's own trip log by itself, so a new install starts from the car's real consumption. It uses the car's ADB when the car already trusts Maps (after "Do it now"); otherwise the BYD battery dialog asks once.
 - **Export records** copies the drive records to `Android/data/app.morphe.android.apps.maps.automotive/files/Documents/morphe-drive-records`.
 
 ### More
@@ -36,14 +40,14 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 - **Updates**: A daily check for a new release, on by default. It sends only the patches version. Maps from the ready-made APK in BYD Files can install the next release after you confirm.
 - **Report Maps** icon for problem reports, and a safe mode.
 
-UI density, Language, Driver side, Color scheme, Floating Maps window, BYD battery, Send to car and Updates are in Maps' Settings. All patches except Android 9 (API 28) are on by default; only that set is tested.
+Display size, Language, Driver side, Day/night colors, Floating window, BYD battery, Send to car and Updates are in Maps' Settings. All patches except Android 9 (API 28) are on by default; only that set is tested.
 
 ## Tested
 
 Tested on a BYD Dolphin (DiLink 3.0, Android 10) with MicroG-RE 7.3.0.
 
 - Other BYD models, DiLink 5 and Android 11 or newer are untested.
-- BYD battery starts on for the Dolphin and for BYD model ids 128 and 138, where owners' reports show it working. On other models, and on DiLink 5, it starts off.
+- BYD battery starts on for every BYD on DiLink 3 that has BYD's energy tables. If the car's own data is too far from its table, it starts off and the dialog says why. On DiLink 5 it starts off.
 - Plug-in hybrids are not supported.
 
 ## Requirements
@@ -102,7 +106,7 @@ Reports leave out your location, e-mail, VIN and push tokens, and are deleted af
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.2.0-dev.3](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.2.0-dev.3) · 11 patches
+[v0.2.0-dev.7](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.2.0-dev.7) · 11 patches
 
 Eligible versions: Any version.
 
@@ -111,11 +115,11 @@ Eligible versions: Any version.
 | 3D buildings | Adds Maps' own 3D buildings to the map layers. Google hides them in this app. The cluster map shows them only when you turn them on. |  |
 | Android 9 (API 28) | Test builds for Android 9 head units (issue #11): lets the app install and start on Android 9. Tested on one Android 9 head unit; BYD head units do not need it. |  |
 | BYD GPS interval | On BYD DiLink 3 (Android 10), asks for GPS every 500 ms instead of every 100 ms during guidance. The car delivers a fix every 500 ms either way. |  |
-| BYD battery (EV) | Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). On by default on the tested BYD Dolphin and on BYD model ids 128 and 138, where owners' reports show it working; off with an "untested" notice on other BYD models and on DiLink 5. A Settings row turns it on or off and sets the battery to arrive with at charging stops and at the destination. By default Maps also sends the battery percentage and this car's energy model to your Google account, so Google Maps on your phone can show the battery; a switch there turns that off. |  |
+| BYD battery (EV) | Feeds the BYD battery into Maps' EV routing (battery on arrival, chargers). On by default on DiLink 3 cars with BYD's energy tables, unless the car's own data is too far from the table; off on DiLink 5. A Settings row turns it on or off and sets the battery to arrive with at charging stops and at the destination. By default Maps also sends the battery percentage and this car's energy model to your Google account, so Google Maps on your phone can show the battery; a switch there turns that off. |  |
 | BYD location flicker fix | Holds back BYD's brief location off/on flips for up to 3 s, so Maps does not flash its location lockout. |  |
 | BYD navigation volume | Plays Maps' spoken directions on BYD's navigation volume instead of the media volume. |  |
-| Floating Maps window | Shows the next turn, the map and the arrival time in a small window at the bottom right during guidance, when the camera, another app or Home covers Maps. Drag the window to move it, or drag its top-left corner to resize it. On BYD it hides in P and R. It needs "Display over other apps"; its Settings row opens that page, turns the window on or off and sets its opacity. |  |
-| Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 with MicroG-RE 7.3.0, named "Maps" unless the App name option says otherwise. Adds UI density, language, driver side and color scheme settings, a problem report, an update check and a safe mode. The cluster map uses the main map's colors and satellite layer. | • App name |
+| Floating Maps window | Shows the next turn, the map and the arrival time in a small window at the bottom right during guidance, when the camera, another app or Home covers Maps. Tap the window to open Maps; drag it to move it, or drag its top-left corner to resize it. On BYD it shows only in D; after P, R or N it comes back after 30 s in D. It needs "Display over other apps"; its Settings row opens that page, turns the window on or off, keeps it off Home and sets its size and opacity. |  |
+| Google Maps Automotive for MicroG-RE | Runs Google Maps for Android Automotive on Android 10 with MicroG-RE 7.3.0, named "Maps" unless the App name option says otherwise. Adds display size, language, driver side and day/night color settings, a problem report, an update check and a safe mode. The cluster map uses the main map's colors and satellite layer. | • App name |
 | Home and Work shortcuts | Turns the third and fourth icons under the search box into Home and Work, but keeps a charging or gas station icon there. Tap Home or Work to start the route to the place saved in your Google account. |  |
 | Navigation speech | Lets Maps use the head unit's text-to-speech voice for spoken directions when Google's online voice has none ready, so you hear street names instead of short canned prompts. |  |
 | Send to car | Lets phone Maps send a trip to the head unit through MicroG-RE (push routes, the notification service identity and maps.app.goo.gl links). Adds a Send to car row in Settings: a status check and the car's name in phone Maps (default "Vehicle 1"). |  |

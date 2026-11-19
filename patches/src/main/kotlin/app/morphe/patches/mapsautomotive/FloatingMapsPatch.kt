@@ -39,9 +39,9 @@ private val floatingMapsManifestPatch = resourcePatch {
 val floatingMapsPatch = bytecodePatch(
     name = "Floating Maps window",
     description = "Shows the next turn, the map and the arrival time in a small window at the bottom right during guidance, " +
-        "when the camera, another app or Home covers Maps. Drag the window to move it, or drag its top-left corner to resize it. " +
-        "On BYD it hides in P and R. It needs \"Display over other apps\"; its Settings row opens that page, turns the window on " +
-        "or off and sets its opacity.",
+        "when the camera, another app or Home covers Maps. Tap the window to open Maps; drag it to move it, or drag its top-left " +
+        "corner to resize it. On BYD it shows only in D; after P, R or N it comes back after 30 s in D. It needs \"Display over " +
+        "other apps\"; its Settings row opens that page, turns the window on or off, keeps it off Home and sets its size and opacity.",
     default = true,
 ) {
     compatibleWith(compatibility)

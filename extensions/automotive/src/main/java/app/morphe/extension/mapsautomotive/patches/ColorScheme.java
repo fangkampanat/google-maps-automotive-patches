@@ -697,23 +697,23 @@ public final class ColorScheme {
 
     /** Injection point: the row title. */
     public static String getSettingsTitle(Context context) {
-        return UiDensityPatch.isThai(context) ? "รูปแบบสี (Color scheme)" : "Color scheme";
+        return UiDensityPatch.isThai(context) ? "สีกลางวัน/กลางคืน" : "Day/night colors";
     }
 
     /** Injection point: the row subtitle, the current choice. */
     public static String getSettingsSummary(Context context) {
         boolean thai = UiDensityPatch.isThai(context);
         if (!SafeMode.on(context, SafeMode.COLOR_SCHEME)) {
-            return (thai ? "ใช้สีของ Maps ชั่วคราว · สวิตช์ใน " : "Maps' colors for now · switch in ")
-                    + ReportPatch.reportPlace(context, thai);
+            return (thai ? "ใช้สีของ Maps ชั่วคราว (เปิดคืนใน " : "Maps' colors for now (back on in ")
+                    + ReportPatch.reportPlace(context, thai) + ")";
         }
         // The row is built once per Settings screen, so it names the choice, not the colors at that moment.
         String chosen = stored(context);
         int[] window = storedTimes(context);
         if (AUTO.equals(chosen) && lightsGivenUp) {
-            return choiceLabel(AUTO, thai, window) + " · " + (thai ? "อ่านไฟหน้าไม่ได้ ใช้สีของ Maps" : "headlights unreadable, Maps' colors");
+            return rowLabel(AUTO, thai, window) + " · " + (thai ? "อ่านไฟหน้าไม่ได้ ใช้สีของ Maps" : "headlights unreadable, Maps' colors");
         }
-        return choiceLabel(chosen, thai, window);
+        return rowLabel(chosen, thai, window);
     }
 
     /**
@@ -851,9 +851,9 @@ public final class ColorScheme {
         new AlertDialog.Builder(activity)
                 .setTitle(getSettingsTitle(activity))
                 .setMessage(thai
-                        ? "บันทึกแล้ว จะใช้" + choiceLabel(chosen, true, shownTimes) + " เมื่อเปิด Color scheme อีกครั้งใน "
+                        ? "บันทึกแล้ว จะใช้" + choiceLabel(chosen, true, shownTimes) + " เมื่อเปิดสีกลางวัน/กลางคืนอีกครั้งใน "
                         + ReportPatch.reportPlace(activity, true)
-                        : "Saved. " + choiceLabel(chosen, false, shownTimes) + " is used once Color scheme is switched on again in "
+                        : "Saved. " + choiceLabel(chosen, false, shownTimes) + " is used once Day/night colors is switched on again in "
                         + ReportPatch.reportPlace(activity, false) + ".")
                 .setPositiveButton(thai ? "ตกลง" : "OK", null)
                 .show();
@@ -937,6 +937,14 @@ public final class ColorScheme {
     }
 
     /** The chooser's and the row's name of a choice; Auto (time) with its times ([window]). */
+    /** The Settings row's short form of {@link #choiceLabel}. */
+    static String rowLabel(String chosen, boolean thai, int[] window) {
+        if (SYSTEM.equals(chosen)) return thai ? "ตามระบบ" : "System";
+        if (TIME.equals(chosen)) return (thai ? "ตามเวลา · " : "By time · ") + span(window);
+        if (DAY.equals(chosen) || NIGHT.equals(chosen)) return choiceLabel(chosen, thai, window);
+        return thai ? "ตามไฟหน้า" : "By headlights";
+    }
+
     static String choiceLabel(String chosen, boolean thai, int[] window) {
         if (DAY.equals(chosen)) return thai ? "กลางวัน" : "Day";
         if (NIGHT.equals(chosen)) return thai ? "กลางคืน" : "Night";

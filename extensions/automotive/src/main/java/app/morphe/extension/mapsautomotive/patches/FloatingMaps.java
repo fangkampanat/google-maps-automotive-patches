@@ -7,9 +7,13 @@ import android.app.AlertDialog;
 import android.app.Application;
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -36,6 +40,7 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
@@ -49,8 +54,10 @@ import org.json.JSONObject;
 
 import java.lang.ref.WeakReference;
 import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.function.IntConsumer;
 
 /**
  * Floating Maps window (patch "Floating Maps window", switch "floating_maps").
@@ -65,13 +72,18 @@ import java.util.WeakHashMap;
  * other app is left without the focus. A start the system drops is tried again on a new display, later each time.</li>
  * <li>The display has no surface until the window shows. The system stops the card while its display is off, so it
  * draws nothing in the background.</li>
- * <li>Guidance: Maps' own navigation notification, ongoing. Its end counts only when a second look 2 s later agrees,
- * since Maps replaces the notification at times.</li>
- * <li>The window starts at the bottom right, 640×360 px, 24 px from the edges. Dragging moves it, its top-left corner
- * resizes it, and both are saved. Taps do not reach the map. The X hides it until a Maps screen is in front again.</li>
- * <li>On BYD, it stays away in P and R (the owner can turn that off): parked, or over the rear camera.</li>
+ * <li>Guidance: Maps' own navigation notification, ongoing and with an action (its exit button). Maps posts the same
+ * notification without actions in its driving mode, which is not guidance. The end counts only when a second look 2 s
+ * later agrees, since Maps replaces the notification at times.</li>
+ * <li>The window starts at the bottom right, medium size (640×540 px), 24 px from the edges. Dragging moves it, its
+ * top-left corner resizes it, and both are saved. A tap opens Maps; taps do not reach the map. The X hides it until a
+ * Maps screen is in front again.</li>
+ * <li>On BYD, it shows only in D (M and S count as D; the owner can turn that off): not in P, R or N, so never over the
+ * rear camera, and after another gear only once D has held 30 s, so it does not flicker while parking.</li>
+ * <li>The owner can keep it off Home: while the home app's task is the most recent of the tasks Android lists to this
+ * app (the home app's and Maps' own).</li>
  * <li>It needs "Display over other apps" (SYSTEM_ALERT_WINDOW, which the patch declares), granted on the system's page
- * from the Settings dialog. The dialog also turns the window on or off and sets its opacity.</li>
+ * from the Settings dialog. The dialog also turns the window on or off and sets its size and opacity.</li>
  * </ul>
  */
 @SuppressWarnings("unused")
@@ -80,10 +92,13 @@ public final class FloatingMaps {
     /** Must match the activity the patch checks in the manifest. */
     static final String CARD_ACTIVITY = "com.google.android.apps.gmm.car.embedded.activity.LimitedMapsActivity";
     private static final String PREFERENCES = "morphe_floating_maps", KEY_ON = "on", KEY_RIGHT = "right", KEY_BOTTOM = "bottom",
-            KEY_WIDTH = "width", KEY_HEIGHT = "height", KEY_OPACITY = "opacity", KEY_HIDE_P_R = "hide_in_p_r";
-    static final int DEFAULT_WIDTH = 640, DEFAULT_HEIGHT = 360, MARGIN = 24, MIN_WIDTH = 320, MIN_HEIGHT = 180;
+            KEY_WIDTH = "width", KEY_HEIGHT = "height", KEY_OPACITY = "opacity", KEY_ONLY_D = "only_in_d",
+            KEY_HIDE_P_R = "hide_in_p_r", KEY_NOT_OVER_HOME = "hide_over_home";
+    /** The window's sizes in px: small, medium (the default), large. */
+    static final int[][] SIZES = {{480, 400}, {640, 540}, {800, 680}};
+    static final int DEFAULT_WIDTH = 640, DEFAULT_HEIGHT = 540, MARGIN = 24, MIN_WIDTH = 320, MIN_HEIGHT = 180;
     /** The window's opacity choices in percent; the first is the default. */
-    static final int[] OPACITIES = {100, 85, 70, 55};
+    static final int[] OPACITIES = {100, 75, 50, 25};
     private static final int CARD_DPI = 160;
     /** DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY and the hidden DESTROY_CONTENT_ON_REMOVAL (1 << 8). */
     private static final int DISPLAY_FLAGS = DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY | 1 << 8;
@@ -91,16 +106,25 @@ public final class FloatingMaps {
     private static final String NAVIGATION = "navigation";
     static final long WATCH_MS = 2000, GUIDING_WATCH_MS = 5000, QUICK_WATCH_MS = 1000, COVER_DELAY_MS = 700,
             FOCUS_CHECK_MS = 600, RELEASE_TIMEOUT_MS = 3000, CARD_START_MS = 10_000, CARD_RETRY_MAX_MS = 60_000,
-            OFF_CONFIRM_MS = 2000, RECENT_GUIDANCE_MS = 10 * 60_000;
+            OFF_CONFIRM_MS = 2000, RECENT_GUIDANCE_MS = 10 * 60_000, D_HOLD_MS = 30_000;
+    /** Failed gear readings in a row that keep the last gear before it counts as unknown. */
+    static final int GEAR_MISSES = 5;
+    /** Must match the report screen and its launcher entry in the manifest; it runs in its own process, outside [inFront]. */
+    private static final String REPORT_ACTIVITY = "app.morphe.extension.mapsautomotive.patches.ReportActivity",
+            REPORT_LAUNCHER = "app.morphe.extension.mapsautomotive.patches.ReportLauncher";
 
     // Main thread only.
     private static Application application;
     private static Handler main;
-    private static boolean installed, guiding, dismissed, cardRequested, noCardLogged, gearTried;
-    private static int startFailures, lastGear = BydGear.UNKNOWN;
-    /** [offSince]: when guidance was first missed (0: not missed); [retryAt]: no card start before this. Uptime. */
-    private static long cardRequestedAt, offSince, lastGuidingAt, retryAt;
+    private static boolean installed, guiding, dismissed, cardRequested, noCardLogged, gearTried, homeTried, lastHome;
+    private static int startFailures, lastGear = BydGear.UNKNOWN, gearMisses;
+    /**
+     * [offSince]: when guidance was first missed (0: not missed); [retryAt]: no card start before this; [driveSince]:
+     * when D (or M, S) began, 0 in other gears. Uptime.
+     */
+    private static long cardRequestedAt, offSince, lastGuidingAt, retryAt, driveSince;
     private static BydGear gear;
+    private static String homePackage;
     /** Maps' screens that are started (visible), the card excepted. */
     private static final Set<Activity> inFront = Collections.newSetFromMap(new WeakHashMap<>());
     private static WeakReference<Activity> card;
@@ -111,8 +135,8 @@ public final class FloatingMaps {
     private static SurfaceView picture;
 
     // For the problem report, read from another thread.
-    private static volatile boolean reportGuiding, reportCard, reportShowing;
-    private static volatile int cardStarts, shown, closedByX, focusRestores, droppedStarts, reportFlags = -1;
+    private static volatile boolean reportGuiding, reportCard, reportShowing, reportHome;
+    private static volatile int cardStarts, shown, closedByX, focusRestores, droppedStarts, taps, reportFlags = -1, reportActions;
     private static volatile String lastError, reportGear, gearStatus;
 
     private static final Runnable watcher = FloatingMaps::watch;
@@ -246,8 +270,9 @@ public final class FloatingMaps {
                 return;
             }
             long now = SystemClock.uptimeMillis();
-            int flags = navigationFlags();
-            boolean seen = isGuidance(flags);
+            int[] navigation = navigation();
+            int flags = navigation[0], actions = navigation[1];
+            boolean seen = isGuidance(flags, actions);
             if (seen) {
                 lastGuidingAt = now;
                 offSince = 0;
@@ -256,13 +281,18 @@ public final class FloatingMaps {
             }
             boolean next = keepGuiding(guiding, seen, offSince, now);
             reportFlags = flags;
+            reportActions = actions;
             if (next != guiding) {
                 guiding = next;
                 reportGuiding = next;
                 startFailures = 0;
                 retryAt = 0;
                 offSince = 0;
-                ReportLog.i(TAG, "guidance " + (next ? "on" : "off") + " (" + notificationText(flags) + ")");
+                ReportLog.i(TAG, "guidance " + (next ? "on" : "off") + " (" + notificationText(flags, actions) + ")");
+                // A new guidance reads the gear afresh: its first reading counts as the first.
+                lastGear = BydGear.UNKNOWN;
+                gearMisses = 0;
+                driveSince = 0;
                 if (!next) tearDown("guidance ended");
                 ReportBuilder.saveSnapshot(application, true);
             }
@@ -275,14 +305,21 @@ public final class FloatingMaps {
                 note("card did not start (" + startFailures + ")", new IllegalStateException("no card after " + CARD_START_MS + " ms"));
                 tearDown("card did not start");
             }
-            boolean watchGear = false;
+            // The gear at every look in guidance (Maps in front too), so D's start is known before Maps is covered.
+            boolean gearKnown = guiding && gearWatched();
+            if (gearKnown) readGear(now);
+            boolean watchCover = false;
             if (guiding) {
                 if (front) {
                     if (card() == null && !cardRequested) startCard();
                 } else {
-                    watchGear = gearWatched();
-                    if (watchGear && gearHides()) {
-                        hideWindow("gear " + BydGear.name(lastGear));
+                    boolean overHome = hideOverHome(application);
+                    watchCover = gearKnown || overHome;
+                    String away = gearKnown && !gearAllows(lastGear, driveSince, now)
+                            ? (BydGear.driving(lastGear) ? "until 30 s in D" : "gear " + BydGear.name(lastGear))
+                            : screenInFront(overHome);
+                    if (away != null) {
+                        hideWindow(away);
                     } else if (!dismissed) {
                         showWindow();
                     }
@@ -290,7 +327,7 @@ public final class FloatingMaps {
             }
             boolean recent = lastGuidingAt != 0 && now - lastGuidingAt < RECENT_GUIDANCE_MS;
             if (front || guiding || display != null || recent) {
-                main.postDelayed(watcher, watchDelay(offSince != 0, guiding, front && card() == null, watchGear));
+                main.postDelayed(watcher, watchDelay(offSince != 0, guiding, front && card() == null, watchCover));
             }
         } catch (Throwable error) {
             note("watch failed", error);
@@ -303,13 +340,41 @@ public final class FloatingMaps {
     }
 
     /**
-     * The next look: soon to confirm a missed guidance; every second while Maps waits for its card or the gear is
-     * watched over another screen; else every 5 s in guidance and every 2 s outside. Plain Java.
+     * The next look: soon to confirm a missed guidance; every second while Maps waits for its card or, over another
+     * screen, the gear or Home is watched; else every 5 s in guidance and every 2 s outside. Plain Java.
      */
-    static long watchDelay(boolean confirming, boolean guiding, boolean waitingForCard, boolean watchingGear) {
+    static long watchDelay(boolean confirming, boolean guiding, boolean waitingForCard, boolean watchingCover) {
         if (confirming) return OFF_CONFIRM_MS;
-        if (guiding && (waitingForCard || watchingGear)) return QUICK_WATCH_MS;
+        if (guiding && (waitingForCard || watchingCover)) return QUICK_WATCH_MS;
         return guiding ? GUIDING_WATCH_MS : WATCH_MS;
+    }
+
+    /**
+     * The window may show in this gear: always without a reading; in D (or M, S) once it has held [D_HOLD_MS];
+     * never in P, R or N. Plain Java.
+     */
+    static boolean gearAllows(int gear, long driveSince, long now) {
+        if (gear == BydGear.UNKNOWN) return true;
+        return BydGear.driving(gear) && now - driveSince >= D_HOLD_MS;
+    }
+
+    /**
+     * The gear the rule uses after reading [read]: a failed reading (unknown) keeps [last] until [misses] failed
+     * readings in a row reach GEAR_MISSES. Plain Java.
+     */
+    static int gearAfter(int last, int read, int misses) {
+        if (read != BydGear.UNKNOWN) return read;
+        return misses < GEAR_MISSES ? last : BydGear.UNKNOWN;
+    }
+
+    /**
+     * When D (or M, S) began after a reading of [current]: 0 outside them; unchanged while driving; now after P, R or N;
+     * already held when the first reading of the guidance is D (it started while driving). Plain Java.
+     */
+    static long nextDriveSince(int previous, int current, long driveSince, long now) {
+        if (!BydGear.driving(current)) return 0;
+        if (BydGear.driving(previous)) return driveSince;
+        return previous == BydGear.UNKNOWN ? now - D_HOLD_MS : now;
     }
 
     /** After the [failures]th dropped card start: 10 s, 20 s, 40 s, then every 60 s. Plain Java. */
@@ -319,48 +384,146 @@ public final class FloatingMaps {
         return Math.min(delay, CARD_RETRY_MAX_MS);
     }
 
-    // The flags of Maps' navigation notification (an ongoing one first), or -1 without one.
-    private static int navigationFlags() {
+    // Maps' navigation notification for guidance, or null.
+    private static Notification guidanceNotification() {
         NotificationManager notifications = (NotificationManager) application.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (notifications == null) return -1;
-        int found = -1;
+        if (notifications == null) return null;
         for (StatusBarNotification posted : notifications.getActiveNotifications()) {
             Notification notification = posted.getNotification();
-            if (notification == null || !NAVIGATION.equals(notification.category)) continue;
-            if (isGuidance(notification.flags)) return notification.flags;
-            if (found < 0) found = notification.flags;
+            if (notification != null && NAVIGATION.equals(notification.category)
+                    && isGuidance(notification.flags, actionCount(notification))) {
+                return notification;
+            }
         }
-        return found;
+        return null;
+    }
+
+    // The flags and the number of actions of Maps' navigation notification (the guidance one first), or {-1, 0}.
+    private static int[] navigation() {
+        Notification guidance = guidanceNotification();
+        if (guidance != null) return new int[]{guidance.flags, actionCount(guidance)};
+        NotificationManager notifications = (NotificationManager) application.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (notifications == null) return new int[]{-1, 0};
+        for (StatusBarNotification posted : notifications.getActiveNotifications()) {
+            Notification notification = posted.getNotification();
+            if (notification != null && NAVIGATION.equals(notification.category)) {
+                return new int[]{notification.flags, actionCount(notification)};
+            }
+        }
+        return new int[]{-1, 0};
+    }
+
+    private static int actionCount(Notification notification) {
+        return notification.actions != null ? notification.actions.length : 0;
     }
 
     /**
-     * Guidance: a navigation notification of Maps that is ongoing. Maps posts it from its navigation service; after a
-     * route change it was seen without the foreground-service flag (0x10a), so that flag alone is not required.
-     * Plain Java.
+     * Guidance: a navigation notification of Maps that is ongoing and has an action. In guidance Maps adds its exit
+     * button (with the next road, the arrival and a turn arrow); its driving mode posts the same notification (id,
+     * channel, category, 0x16a or 0x10a) with none of them. The foreground-service flag goes after a route change, so
+     * it is not required. Plain Java.
      */
-    static boolean isGuidance(int flags) {
-        return flags >= 0 && (flags & (Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE)) != 0;
+    static boolean isGuidance(int flags, int actions) {
+        return flags >= 0 && actions > 0
+                && (flags & (Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE)) != 0;
     }
 
-    private static String notificationText(int flags) {
-        return flags < 0 ? "no navigation notification" : "navigation notification 0x" + Integer.toHexString(flags);
+    private static String notificationText(int flags, int actions) {
+        return flags < 0 ? "no navigation notification"
+                : "navigation notification 0x" + Integer.toHexString(flags) + ", " + actions + (actions == 1 ? " action" : " actions");
     }
 
     // The owner's choice on, and a gear the BYD SDK reports.
     private static boolean gearWatched() {
-        return hideInParkAndReverse(application) && gearReader() != null;
+        return onlyInDrive(application) && gearReader() != null;
     }
 
-    // P or R: the window stays away (parked, or over the rear camera).
-    private static boolean gearHides() {
+    // The gear now, and when D (or M, S) began.
+    private static void readGear(long now) {
         BydGear reader = gearReader();
-        int value = reader != null ? reader.read() : BydGear.UNKNOWN;
+        int read = reader != null ? reader.read() : BydGear.UNKNOWN;
+        gearMisses = read == BydGear.UNKNOWN ? gearMisses + 1 : 0;
+        int value = gearAfter(lastGear, read, gearMisses);
+        driveSince = nextDriveSince(lastGear, value, driveSince, now);
         if (value != lastGear) {
+            boolean waits = BydGear.driving(value) && !BydGear.driving(lastGear) && lastGear != BydGear.UNKNOWN;
             lastGear = value;
             reportGear = BydGear.name(value);
-            ReportLog.i(TAG, "gear " + reportGear);
+            ReportLog.i(TAG, "gear " + reportGear + (waits ? " (the window waits 30 s)" : ""));
         }
-        return value == BydGear.PARK || value == BydGear.REVERSE;
+    }
+
+    // Over another screen: why the window stays away, or null. Maps' report screen (its own process, so not one of
+    // the screens followed here) always; Home when the owner chose it.
+    private static String screenInFront(boolean overHome) {
+        ComponentName top = topTask();
+        if (top != null && (REPORT_ACTIVITY.equals(top.getClassName()) || REPORT_LAUNCHER.equals(top.getClassName()))) {
+            return "report screen in front";
+        }
+        String home = overHome ? homePackage() : null;
+        boolean found = home != null && top != null && home.equals(top.getPackageName());
+        if (overHome) {
+            reportHome = found;
+            if (found != lastHome) {
+                lastHome = found;
+                ReportLog.i(TAG, "Home in front: " + found);
+            }
+        }
+        return found ? "Home in front" : null;
+    }
+
+    // The top activity of the most recent task Android lists to Maps (the home app's and Maps' own; the card's is
+    // skipped), or null. After an app is opened from Home, Home is still the most recent of them.
+    @SuppressWarnings("deprecation")
+    private static ComponentName topTask() {
+        try {
+            ActivityManager activities = (ActivityManager) application.getSystemService(Context.ACTIVITY_SERVICE);
+            List<ActivityManager.RunningTaskInfo> tasks = activities.getRunningTasks(8);
+            for (ActivityManager.RunningTaskInfo task : tasks) {
+                ComponentName top = task.topActivity;
+                if (top == null || CARD_ACTIVITY.equals(top.getClassName())) continue;
+                return top;
+            }
+        } catch (Throwable error) {
+            note("tasks not read", error);
+        }
+        return null;
+    }
+
+    // The default home app's package, resolved once; null if there is none or the system asks the user.
+    private static String homePackage() {
+        if (!homeTried) {
+            homeTried = true;
+            try {
+                ResolveInfo info = application.getPackageManager().resolveActivity(
+                        new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY);
+                String name = info != null && info.activityInfo != null ? info.activityInfo.packageName : null;
+                homePackage = "android".equals(name) ? null : name;
+            } catch (Throwable error) {
+                note("home app not resolved", error);
+            }
+            ReportLog.i(TAG, "home app: " + homePackage);
+        }
+        return homePackage;
+    }
+
+    // A tap on the window: Maps' guidance screen, as a tap on its notification opens it; else Maps' launcher entry.
+    private static void openMaps() {
+        try {
+            Notification guidance = guidanceNotification();
+            PendingIntent target = guidance != null ? guidance.contentIntent : null;
+            if (target != null) {
+                target.send();
+            } else {
+                Intent launch = application.getPackageManager().getLaunchIntentForPackage(application.getPackageName());
+                if (launch == null) return;
+                application.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED));
+            }
+            taps++;
+            ReportLog.i(TAG, "window tapped: Maps opened" + (target != null ? "" : " (launcher entry)"));
+        } catch (Throwable error) {
+            note("Maps not opened from the window", error);
+        }
     }
 
     // Made once, on BYD only.
@@ -374,7 +537,7 @@ public final class FloatingMaps {
             } else {
                 gearStatus = "not BYD";
             }
-            ReportLog.i(TAG, "gear for P and R: " + gearStatus);
+            ReportLog.i(TAG, "gear for D: " + gearStatus);
         }
         return gear;
     }
@@ -630,6 +793,11 @@ public final class FloatingMaps {
                 }
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
+                    if (!moved && !resize && event.getActionMasked() == MotionEvent.ACTION_UP
+                            && event.getEventTime() - event.getDownTime() < ViewConfiguration.getLongPressTimeout()) {
+                        openMaps();
+                        return true;
+                    }
                     if (moved) {
                         Spot spot = new Spot(params.x, params.y, params.width, params.height);
                         spot.save(application);
@@ -656,7 +824,7 @@ public final class FloatingMaps {
             this.height = height;
         }
 
-        /** The saved place on a screen of [screen] px, or the default: bottom right, 640×360, 24 px from the edges. */
+        /** The saved place on a screen of [screen] px, or the default: bottom right, 640×540, 24 px from the edges. */
         static Spot load(Context context, Point screen) {
             SharedPreferences preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
             return fit(preferences.getInt(KEY_RIGHT, MARGIN), preferences.getInt(KEY_BOTTOM, MARGIN),
@@ -754,22 +922,32 @@ public final class FloatingMaps {
         ReportLog.w(TAG, what, error);
     }
 
-    // The owner's choices, from the Settings dialog: the window on (by default), hidden in P and R (by default), its
-    // opacity and its place. A change applies the next time the window shows.
+    // The owner's choices, from the Settings dialog: the window on (by default), only in D (by default), kept off Home
+    // (not by default), its size, opacity and place. A change applies the next time the window shows.
 
     static boolean userOn(Context context) {
-        return preference(context, KEY_ON);
+        return preference(context, KEY_ON, true);
     }
 
-    static boolean hideInParkAndReverse(Context context) {
-        return preference(context, KEY_HIDE_P_R);
-    }
-
-    private static boolean preference(Context context, String key) {
+    /** Only in D; dev.3's "Hide in P and R" choice carries over until this one is set. */
+    static boolean onlyInDrive(Context context) {
         try {
-            return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean(key, true);
+            SharedPreferences preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
+            return preferences.getBoolean(KEY_ONLY_D, preferences.getBoolean(KEY_HIDE_P_R, true));
         } catch (RuntimeException error) {
             return true;
+        }
+    }
+
+    static boolean hideOverHome(Context context) {
+        return preference(context, KEY_NOT_OVER_HOME, false);
+    }
+
+    private static boolean preference(Context context, String key, boolean fallback) {
+        try {
+            return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean(key, fallback);
+        } catch (RuntimeException error) {
+            return fallback;
         }
     }
 
@@ -781,12 +959,21 @@ public final class FloatingMaps {
         }
     }
 
-    /** A stored opacity kept to one of the choices. Plain Java. */
+    /** A stored opacity kept to the nearest choice (an earlier version's 85, 70 or 55 included). Plain Java. */
     static int opacityChoice(int stored) {
+        int nearest = OPACITIES[0];
         for (int choice : OPACITIES) {
-            if (choice == stored) return choice;
+            if (Math.abs(choice - stored) < Math.abs(nearest - stored)) nearest = choice;
         }
-        return OPACITIES[0];
+        return nearest;
+    }
+
+    /** The size choice [width]×[height] is, or -1 for a size set by dragging. Plain Java. */
+    static int sizeChoice(int width, int height) {
+        for (int i = 0; i < SIZES.length; i++) {
+            if (SIZES[i][0] == width && SIZES[i][1] == height) return i;
+        }
+        return -1;
     }
 
     private static void setUserOn(Activity host, boolean on) {
@@ -797,9 +984,30 @@ public final class FloatingMaps {
         else tearDown("turned off");
     }
 
-    private static void setHideInParkAndReverse(Activity host, boolean hide) {
-        host.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean(KEY_HIDE_P_R, hide).apply();
-        ReportLog.i(TAG, "hidden in P and R " + (hide ? "on" : "off") + " in Settings");
+    private static void setOnlyInDrive(Activity host, boolean only) {
+        host.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean(KEY_ONLY_D, only).apply();
+        ReportLog.i(TAG, "only in D " + (only ? "on" : "off") + " in Settings");
+    }
+
+    private static void setHideOverHome(Activity host, boolean hide) {
+        host.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean(KEY_NOT_OVER_HOME, hide).apply();
+        ReportLog.i(TAG, "hidden over Home " + (hide ? "on" : "off") + " in Settings");
+    }
+
+    private static void setSize(Activity host, int choice) {
+        host.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
+                .putInt(KEY_WIDTH, SIZES[choice][0]).putInt(KEY_HEIGHT, SIZES[choice][1]).apply();
+        ReportLog.i(TAG, "window size " + SIZES[choice][0] + "x" + SIZES[choice][1] + " in Settings");
+    }
+
+    // The saved size's choice, or -1.
+    private static int savedSizeChoice(Context context) {
+        try {
+            Point size = savedSize(context);
+            return sizeChoice(size.x, size.y);
+        } catch (RuntimeException error) {
+            return -1;
+        }
     }
 
     private static void setOpacity(Activity host, int percent) {
@@ -817,20 +1025,20 @@ public final class FloatingMaps {
 
     /** Injection point: the row title. */
     public static String getSettingsTitle(Context context) {
-        return UiDensityPatch.isThai(context) ? "หน้าต่าง Maps ลอย (Floating Maps window)" : "Floating Maps window";
+        return UiDensityPatch.isThai(context) ? "หน้าต่างลอย" : "Floating window";
     }
 
     /** Injection point: the row subtitle, the state. */
     public static String getSettingsSummary(Context context) {
         boolean thai = UiDensityPatch.isThai(context);
         if (!SafeMode.on(context, SafeMode.FLOATING_MAPS)) {
-            return (thai ? "ปิดชั่วคราว · สวิตช์ใน " : "Off for now · switch in ") + ReportPatch.reportPlace(context, thai);
+            return (thai ? "ปิดชั่วคราว (เปิดคืนใน " : "Off for now (back on in ") + ReportPatch.reportPlace(context, thai) + ")";
         }
         if (!userOn(context)) return thai ? "ปิด" : "Off";
         if (!Settings.canDrawOverlays(context)) {
-            return thai ? "เปิด · ยังไม่ได้อนุญาตให้แสดงทับแอปอื่น" : "On · not allowed to display over other apps yet";
+            return thai ? "เปิด · ยังไม่ได้อนุญาต" : "On · not allowed yet";
         }
-        return thai ? "เปิด · ขึ้นระหว่างนำทางเมื่อหน้าจออื่นบัง Maps" : "On · shows during guidance when another screen covers Maps";
+        return thai ? "เปิด" : "On";
     }
 
     /** Injection point: the row's click action. */
@@ -869,8 +1077,8 @@ public final class FloatingMaps {
 
     /**
      * The Settings dialog: the on/off switch, "Display over other apps" while it is missing, then the window's choices
-     * (hidden in P and R, opacity, place). Every tap applies at once. Colors come from the dialog theme; sizes are for a
-     * head unit at arm's length, as in BYD battery's dialog.
+     * (only in D, off Home, size, opacity, place). Every tap applies at once. Colors come from the dialog theme; sizes
+     * are for a head unit at arm's length, as in BYD battery's dialog.
      */
     private static final class SettingsViews {
         final ScrollView root;
@@ -880,9 +1088,9 @@ public final class FloatingMaps {
         private final boolean thai, hasPage, gearAvailable;
         private final int primary, secondary, accent;
         private final LinearLayout content, permission, windowSection;
-        private final Switch toggle, gearToggle;
-        private final TextView status, gearStatusText, resetCaption;
-        private final TextView[] chips = new TextView[OPACITIES.length];
+        private final Switch toggle, gearToggle, homeToggle;
+        private final TextView status, gearStatusText, homeStatusText, resetCaption;
+        private final TextView[] sizeChips, opacityChips;
 
         SettingsViews(Activity host, Context themed) {
             this.host = host;
@@ -956,35 +1164,26 @@ public final class FloatingMaps {
             gearStatusText = text(14, secondary, false);
             gearToggle = new Switch(themed);
             if (gearAvailable) {
-                LinearLayout gearRow = switchRow(thai ? "ซ่อนตอนเกียร์ P และ R" : "Hide in P and R", 16, gearStatusText, gearToggle,
-                        () -> setHideInParkAndReverse(host, !hideInParkAndReverse(host)));
+                LinearLayout gearRow = switchRow(thai ? "แสดงเฉพาะเกียร์ D" : "Only in D", 16, gearStatusText, gearToggle,
+                        () -> setOnlyInDrive(host, !onlyInDrive(host)));
                 gearRow.setMinimumHeight(px(56));
                 gearRow.setPadding(0, px(4), 0, px(4));
                 windowSection.addView(gearRow);
             }
 
-            TextView opacityLabel = text(16, primary, false);
-            opacityLabel.setText(thai ? "ความทึบ" : "Opacity");
-            opacityLabel.setPadding(0, px(8), 0, 0);
-            windowSection.addView(opacityLabel);
-            LinearLayout chipRow = horizontal();
-            for (int i = 0; i < OPACITIES.length; i++) {
-                int choice = OPACITIES[i];
-                TextView chip = text(15, primary, false);
-                chip.setGravity(Gravity.CENTER);
-                chip.setMinHeight(px(48));
-                chip.setPadding(px(6), px(4), px(6), px(4));
-                chip.setText(choice + "%");
-                chip.setOnClickListener(view -> {
-                    setOpacity(host, choice);
-                    update();
-                });
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-                params.setMargins(i == 0 ? 0 : px(4), px(4), i == OPACITIES.length - 1 ? 0 : px(4), px(4));
-                chipRow.addView(chip, params);
-                chips[i] = chip;
-            }
-            windowSection.addView(chipRow);
+            homeStatusText = text(14, secondary, false);
+            homeToggle = new Switch(themed);
+            LinearLayout homeRow = switchRow(thai ? "ซ่อนบนหน้า Home" : "Hide over Home", 16, homeStatusText, homeToggle,
+                    () -> setHideOverHome(host, !hideOverHome(host)));
+            homeRow.setMinimumHeight(px(56));
+            homeRow.setPadding(0, px(4), 0, px(4));
+            windowSection.addView(homeRow);
+
+            String[] sizeNames = thai ? new String[]{"เล็ก", "กลาง", "ใหญ่"} : new String[]{"Small", "Medium", "Large"};
+            sizeChips = chipRow(thai ? "ขนาด" : "Size", sizeNames, choice -> setSize(host, choice));
+            String[] opacityNames = new String[OPACITIES.length];
+            for (int i = 0; i < OPACITIES.length; i++) opacityNames[i] = OPACITIES[i] + "%";
+            opacityChips = chipRow(thai ? "ความทึบ" : "Opacity", opacityNames, choice -> setOpacity(host, OPACITIES[choice]));
 
             TextView reset = text(16, accent, true);
             reset.setText(thai ? "ตำแหน่งเริ่มต้น" : "Reset place");
@@ -996,8 +1195,9 @@ public final class FloatingMaps {
             resetCaption.setLineSpacing(0, 1.2f);
             reset.setOnClickListener(view -> {
                 resetSpot(host);
-                resetCaption.setText(thai ? "หน้าต่างจะกลับไปมุมขวาล่าง ขนาด 640×360 ตั้งแต่ครั้งถัดไปที่แสดง"
-                        : "The window goes back to the bottom right at 640×360 the next time it shows.");
+                resetCaption.setText(thai ? "หน้าต่างจะกลับไปมุมขวาล่าง ขนาดกลาง ตั้งแต่ครั้งถัดไปที่แสดง"
+                        : "The window goes back to the bottom right at medium size the next time it shows.");
+                update();
             });
             windowSection.addView(reset);
             windowSection.addView(resetCaption);
@@ -1006,9 +1206,9 @@ public final class FloatingMaps {
             handling.setLineSpacing(0, 1.2f);
             handling.setPadding(0, px(8), 0, 0);
             handling.setText(thai
-                    ? "ลากหน้าต่างเพื่อย้าย ลากมุมซ้ายบนเพื่อปรับขนาด และกด X เพื่อซ่อนจนกว่าจะกลับมาที่ Maps"
-                    : "Drag the window to move it, drag its top-left corner to resize it, and tap X to hide it until you"
-                    + " are back in Maps.");
+                    ? "แตะหน้าต่างเพื่อเปิด Maps ลากเพื่อย้าย ลากมุมซ้ายบนเพื่อปรับขนาด และกด X เพื่อซ่อนจนกว่าจะกลับมาที่ Maps"
+                    : "Tap the window to open Maps. Drag it to move it, drag its top-left corner to resize it, and tap X"
+                    + " to hide it until you are back in Maps.");
             windowSection.addView(handling);
             content.addView(windowSection);
         }
@@ -1020,12 +1220,18 @@ public final class FloatingMaps {
                     : allowed ? (thai ? "เปิด · ขึ้นเมื่อหน้าจออื่นบัง Maps" : "On · shows when another screen covers Maps")
                     : (thai ? "เปิด · ยังไม่ได้อนุญาตให้แสดงทับแอปอื่น" : "On · not allowed to display over other apps yet"));
             permission.setVisibility(on && !allowed ? View.VISIBLE : View.GONE);
-            boolean hide = hideInParkAndReverse(host);
-            gearToggle.setChecked(hide);
-            gearStatusText.setText(hide ? (thai ? "ซ่อนตอนจอดและตอนถอยหลัง" : "Hidden while parked and while reversing")
-                    : (thai ? "แสดงทุกเกียร์" : "Shown in every gear"));
+            boolean only = onlyInDrive(host);
+            gearToggle.setChecked(only);
+            gearStatusText.setText(only ? (thai ? "ซ่อนตอน P, R และ N · กลับมาเมื่ออยู่ D ครบ 30 วินาที"
+                    : "Hidden in P, R and N; shows again after 30 s in D") : (thai ? "แสดงทุกเกียร์" : "Shown in every gear"));
+            boolean offHome = hideOverHome(host);
+            homeToggle.setChecked(offHome);
+            homeStatusText.setText(offHome ? (thai ? "ซ่อนขณะอยู่หน้า Home" : "Hidden while Home is on screen")
+                    : (thai ? "แสดงบนหน้า Home ด้วย" : "Shown over Home too"));
+            int size = savedSizeChoice(host);
+            for (int i = 0; i < sizeChips.length; i++) styleChip(sizeChips[i], i == size);
             int chosen = opacity(host);
-            for (int i = 0; i < chips.length; i++) styleChip(chips[i], OPACITIES[i] == chosen);
+            for (int i = 0; i < opacityChips.length; i++) styleChip(opacityChips[i], OPACITIES[i] == chosen);
             // Off: the choices stay visible but cannot be changed.
             windowSection.setAlpha(on ? 1f : 0.4f);
             enable(windowSection, on);
@@ -1062,6 +1268,34 @@ public final class FloatingMaps {
                 update();
             });
             return row;
+        }
+
+        // A label and a row of chips, one per name; [pick] stores the chosen index, then the dialog shows it.
+        private TextView[] chipRow(String label, String[] names, IntConsumer pick) {
+            TextView title = text(16, primary, false);
+            title.setText(label);
+            title.setPadding(0, px(8), 0, 0);
+            windowSection.addView(title);
+            LinearLayout row = horizontal();
+            TextView[] chips = new TextView[names.length];
+            for (int i = 0; i < names.length; i++) {
+                int choice = i;
+                TextView chip = text(15, primary, false);
+                chip.setGravity(Gravity.CENTER);
+                chip.setMinHeight(px(48));
+                chip.setPadding(px(6), px(4), px(6), px(4));
+                chip.setText(names[i]);
+                chip.setOnClickListener(view -> {
+                    pick.accept(choice);
+                    update();
+                });
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+                params.setMargins(i == 0 ? 0 : px(4), px(4), i == names.length - 1 ? 0 : px(4), px(4));
+                row.addView(chip, params);
+                chips[i] = chip;
+            }
+            windowSection.addView(row);
+            return chips;
         }
 
         private void styleChip(TextView chip, boolean selected) {
@@ -1145,6 +1379,10 @@ public final class FloatingMaps {
         }
     }
 
+    private static String sizeName(int choice) {
+        return choice == 0 ? "small" : choice == 1 ? "medium" : choice == 2 ? "large" : "dragged";
+    }
+
     /** For the problem report (main process). */
     static JSONObject report(Context context) throws JSONException {
         String error = lastError;
@@ -1166,8 +1404,13 @@ public final class FloatingMaps {
                 .put("closed_by_x", closedByX)
                 .put("focus_restores", focusRestores)
                 .put("notification", reportFlags >= 0 ? "0x" + Integer.toHexString(reportFlags) : JSONObject.NULL)
+                .put("notification_actions", reportActions)
+                .put("taps", taps)
                 .put("opacity", opacity(context))
-                .put("hide_in_p_r", hideInParkAndReverse(context))
+                .put("size", spot != null ? sizeName(sizeChoice(spot.width, spot.height)) : JSONObject.NULL)
+                .put("only_in_d", onlyInDrive(context))
+                .put("hide_over_home", hideOverHome(context))
+                .put("home_in_front", reportHome)
                 .put("gear", reportGear != null ? reportGear : JSONObject.NULL)
                 .put("gear_reader", gearStatus != null ? gearStatus : JSONObject.NULL)
                 .put("place", spot != null ? spot.toString() : JSONObject.NULL)

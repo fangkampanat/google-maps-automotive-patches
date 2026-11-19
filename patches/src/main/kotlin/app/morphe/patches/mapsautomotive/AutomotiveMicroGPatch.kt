@@ -164,7 +164,7 @@ internal object IncludedFeatures {
 val automotiveMicroGPatch = bytecodePatch(
     name = "Google Maps Automotive for MicroG-RE",
     description = "Runs Google Maps for Android Automotive on Android 10 with MicroG-RE 7.3.0, named " +
-        "\"$DEFAULT_APP_NAME\" unless the App name option says otherwise. Adds UI density, language, driver side and color scheme settings, " +
+        "\"$DEFAULT_APP_NAME\" unless the App name option says otherwise. Adds display size, language, driver side and day/night color settings, " +
         "a problem report, an update check and a safe mode. The cluster map uses the main map's colors and satellite layer.",
     default = true,
 ) {

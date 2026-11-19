@@ -249,15 +249,15 @@ public final class AppLanguage {
 
     /** Injection point: the row title. */
     public static String getSettingsTitle(Context context) {
-        return UiDensityPatch.isThai(context) ? "ภาษา (Language)" : "Language";
+        return UiDensityPatch.isThai(context) ? "ภาษา" : "Language";
     }
 
     /** Injection point: the row subtitle, the current choice. */
     public static String getSettingsSummary(Context context) {
         boolean thai = UiDensityPatch.isThai(context);
         if (!SafeMode.on(context, SafeMode.LANGUAGE)) {
-            return (thai ? "ใช้ภาษาของระบบชั่วคราว · สวิตช์ใน " : "System language for now · switch in ")
-                    + ReportPatch.reportPlace(context, thai);
+            return (thai ? "ใช้ภาษาของระบบชั่วคราว (เปิดคืนใน " : "System language for now (back on in ")
+                    + ReportPatch.reportPlace(context, thai) + ")";
         }
         return choiceLabel(context, stored(context));
     }

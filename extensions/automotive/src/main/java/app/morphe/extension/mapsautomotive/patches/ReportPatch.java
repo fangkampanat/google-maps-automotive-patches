@@ -209,13 +209,13 @@ public final class ReportPatch {
             }
             int off = SafeMode.switchedOff();
             if (off > 0) return thai ? "ปิดฟีเจอร์อยู่ " + off + " รายการ · แตะเพื่อดู" : off + (off == 1 ? " feature" : " features") + " off · tap to see";
-            if (!configured()) return thai ? "ไม่ได้ตั้งค่าการส่งรายงานใน build นี้ · ฟีเจอร์เสริม" : "Not set up in this build · extra features";
+            if (!configured()) return thai ? "ส่งไม่ได้ใน build นี้ · เปิด/ปิดฟีเจอร์" : "Sending not set up · features on/off";
             int queued = ReportStore.queuedCount(context);
             if (queued > 0) return thai ? "รอส่ง " + queued + " รายงาน" : queued + " waiting to send";
         } catch (RuntimeException error) {
             ReportLog.w(TAG, "report state unreadable", error);
         }
-        return thai ? "ส่งบันทึกให้ผู้พัฒนาแพตช์ ดูได้ก่อนส่ง · ฟีเจอร์เสริม" : "Send logs to the patch developer, reviewed first · extra features";
+        return thai ? "ส่งบันทึก · เปิด/ปิดฟีเจอร์" : "Send logs · features on/off";
     }
 
     /** Injection point: the row's click action, which opens the report screen. */
@@ -745,16 +745,16 @@ public final class ReportPatch {
 
     private static String featureName(String feature, boolean thai) {
         switch (feature) {
-            case SafeMode.UI_DENSITY: return thai ? "ขนาดการแสดงผล (UI density)" : "UI density";
-            case SafeMode.LANGUAGE: return thai ? "ภาษา (Language)" : "Language";
-            case SafeMode.DRIVER_SIDE: return thai ? "ฝั่งพวงมาลัย (Driver side)" : "Driver side";
-            case SafeMode.COLOR_SCHEME: return thai ? "รูปแบบสี (Color scheme)" : "Color scheme";
+            case SafeMode.UI_DENSITY: return thai ? "ขนาดการแสดงผล" : "Display size";
+            case SafeMode.LANGUAGE: return thai ? "ภาษา" : "Language";
+            case SafeMode.DRIVER_SIDE: return thai ? "ฝั่งพวงมาลัย" : "Driver side";
+            case SafeMode.COLOR_SCHEME: return thai ? "สีกลางวัน/กลางคืน" : "Day/night colors";
             case SafeMode.CLUSTER_SATELLITE: return thai ? "ดาวเทียมบนแผนที่หน้าปัด" : "Satellite on the cluster map";
             case SafeMode.BUILDINGS_3D: return thai ? "อาคาร 3 มิติ (3D buildings)" : "3D buildings";
             case SafeMode.HOME_WORK: return thai ? "ปุ่มบ้านและที่ทำงาน" : "Home and Work shortcuts";
-            case SafeMode.FLOATING_MAPS: return thai ? "หน้าต่าง Maps ลอย" : "Floating Maps window";
-            case SafeMode.BYD_BATTERY: return thai ? "แบตเตอรี่รถ BYD (EV)" : "BYD battery (EV)";
-            case SafeMode.SEND_TO_CAR: return "Send to car";
+            case SafeMode.FLOATING_MAPS: return thai ? "หน้าต่างลอย" : "Floating window";
+            case SafeMode.BYD_BATTERY: return thai ? "แบตเตอรี่ BYD" : "BYD battery";
+            case SafeMode.SEND_TO_CAR: return thai ? "ส่งไปยังรถ" : "Send to car";
             case SafeMode.LOCATION_LOCKOUT_DELAY: return thai ? "แก้ตำแหน่งกะพริบของ BYD" : "BYD location flicker fix";
             case SafeMode.GPS_INTERVAL: return thai ? "ขอ GPS ทุก 500 ms บน BYD" : "BYD GPS interval";
             case SafeMode.BYD_NAVIGATION_VOLUME: return thai ? "ระดับเสียงนำทางของ BYD" : "BYD navigation volume";

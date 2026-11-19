@@ -13,6 +13,7 @@ import com.android.tools.smali.dexlib2.iface.instruction.OffsetInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.RegisterRangeInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.SwitchPayload
 import com.android.tools.smali.dexlib2.iface.instruction.WideLiteralInstruction
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
 import java.util.logging.Logger
@@ -63,17 +64,31 @@ private fun gpsWrites(i: Instruction, register: Int): Boolean {
     return a == register || i.opcode.setsWideRegister() && a + 1 == register
 }
 
-// Index of the instruction a branch at [index] lands on.
-private fun List<Instruction>.gpsBranchTarget(index: Int): Int {
-    val offset = take(index).sumOf { it.codeUnits } + (this[index] as OffsetInstruction).codeOffset
+// Indices of the instructions control can jump to in [method]: branch targets, switch cases and exception handlers.
+internal fun jumpTargets(method: Method, code: List<Instruction>): Set<Int> {
+    val addresses = IntArray(code.size)
     var position = 0
-    forEachIndexed { i, instruction -> if (position == offset) return i; position += instruction.codeUnits }
-    throw PatchException("Invalid branch target at $index")
+    code.forEachIndexed { i, instruction -> addresses[i] = position; position += instruction.codeUnits }
+    val indexAt = addresses.withIndex().associate { (i, address) -> address to i }
+    fun at(address: Int, what: String): Int = indexAt[address] ?: throw PatchException("Invalid $what target in $method")
+    val targets = mutableSetOf<Int>()
+    code.forEachIndexed { i, instruction ->
+        if (instruction !is OffsetInstruction) return@forEachIndexed
+        val target = at(addresses[i] + instruction.codeOffset, "branch")
+        when (instruction.opcode) {
+            Opcode.PACKED_SWITCH, Opcode.SPARSE_SWITCH -> {
+                val payload = code[target] as? SwitchPayload ?: throw PatchException("No switch payload for $i in $method")
+                payload.switchElements.forEach { targets += at(addresses[i] + it.offset, "switch") }
+            }
+            Opcode.FILL_ARRAY_DATA -> Unit
+            else -> targets += target
+        }
+    }
+    method.implementation?.tryBlocks?.forEach { block ->
+        block.exceptionHandlers.forEach { targets += at(it.handlerCodeAddress, "handler") }
+    }
+    return targets
 }
-
-private fun List<Instruction>.gpsBranchTargets(): Set<Int> = indices.filter {
-    this[it] is OffsetInstruction && this[it].opcode !in setOf(Opcode.PACKED_SWITCH, Opcode.SPARSE_SWITCH, Opcode.FILL_ARRAY_DATA)
-}.map { gpsBranchTarget(it) }.toSet()
 
 private fun BytecodePatchContext.hookFastGpsRequest() {
     // The wrapper: an instance (String, long, LocationListener, Looper)V method that requests location updates once.
@@ -100,14 +115,15 @@ private fun BytecodePatchContext.hookFastGpsRequest() {
             val callIndices = code.indices.filter { memberKey(code[it]) == wrapperKey }
             if (callIndices.isEmpty()) return@forEach
             calls += callIndices.size
-            val targets = code.gpsBranchTargets()
+            val targets = jumpTargets(method, code)
             callIndices.forEach { call ->
                 // this, provider, interval (two registers), listener, looper.
                 val registers = gpsRegisters(code[call])
                 if (registers.size != 6 || registers[3] != registers[2] + 1) return@forEach
                 val provider = registers[1]
                 val interval = registers[2]
-                // The last write of each argument before the call, in a straight line: no branch lands after it.
+                // The last write of each argument before the call, in a straight line: no branch, switch case or
+                // exception handler lands after it.
                 fun lastWrite(register: Int): Int? {
                     for (i in call - 1 downTo 0) {
                         if (gpsWrites(code[i], register)) return i.takeIf { w -> (w + 1..call).none { it in targets } }
