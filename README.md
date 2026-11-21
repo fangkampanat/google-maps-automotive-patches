@@ -23,12 +23,12 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 
 - Battery on arrival from the car's own reading (read-only).
 - Choose the battery to arrive with at charging stops, and see the battery health.
-- **Battery on the phone**, on by default: Maps sends the battery percentage to your Google account every 2 minutes while it runs and again when the percentage drops, and this car's energy model (capacity, weight, consumption, charging curves and the outside temperature, without the battery level) when it starts and every 2 hours. Google Maps on a phone signed in to the same account can then show this car's battery and the battery on arrival. A switch in the BYD battery dialog turns it off.
+- **Battery on the phone**, on by default: Maps sends the battery percentage to your Google account every 2 minutes while it runs and again when the percentage drops, and this car's energy model (capacity, weight, consumption, charging curves and the outside temperature, without the battery level) when it starts and every 2 hours. Google Maps on a phone signed in to the same account can then show this car's battery and the battery on arrival. A switch in the BYD battery dialog turns it off. In tests, the phone's battery on arrival was within 1% of the car's.
 - On cars with BYD's energy table, Maps plans with that table adjusted for your car from the A/C draw and guided routes.
-- If your car uses much more or less than BYD's table, guided routes can now adjust the model from 0.6 to 2 times the table, once the speed records agree.
-- Above 90% each percent of a BYD battery holds more energy. Maps' battery percentages, now and on arrival, follow the dashboard there, so a trip that starts above 90% no longer shows an arrival a few points low.
+- If your car uses much more or less than BYD's table, guided routes can adjust the model from 0.6 to 2 times the table, once the speed records agree.
+- Above 90% each percent of a BYD battery holds more energy. Maps' battery percentages, now and on arrival, follow the dashboard there, so a trip that starts above 90% doesn't show an arrival a few points low.
 - The dialog's km per 1% comes from the percents you drove.
-- **BYD's trip log**: Maps reads the car's own trip log by itself, so a new install starts from the car's real consumption. It uses the car's ADB when the car already trusts Maps (after "Do it now"); otherwise the BYD battery dialog asks once.
+- **BYD's trip log**: Maps reads the car's own trip log, so a new install starts from the car's real consumption. If the car already trusts Maps (after "Do it now"), this happens by itself. Otherwise tap **Allow** on the card in the BYD battery dialog, then on Android's prompt.
 - **Export records** copies the drive records to `Android/data/app.morphe.android.apps.maps.automotive/files/Documents/morphe-drive-records`.
 
 ### More
@@ -54,25 +54,17 @@ Tested on a BYD Dolphin (DiLink 3.0, Android 10) with MicroG-RE 7.3.0.
 
 - [Morphe Desktop](https://github.com/MorpheApp/morphe-desktop) 2.2.0 or newer, with Java 21
 - The original **Google Maps (Android Automotive) 26.10.120003.E** APK (version code `1068833413`), for example from APKMirror. Other versions are untested.
-- An ARM64 BYD head unit with Android 10 or newer, 4 KiB memory pages and ADB access for one command during install
+- An ARM64 BYD head unit with Android 10 or newer, 4 KiB memory pages and wireless ADB on
 
 ## Install
 
 ### 1. MicroG-RE on the head unit
 
-1. Install `microg-7.3.0-icon-arm64-v8a.apk` from [MicroG-RE 7.3.0](https://github.com/MorpheApp/MicroG-RE/releases/tag/7.3.0).
-2. Run this once over ADB. Without it, MicroG-RE stops sending your location to Maps on DiLink 3.
-
-   ```bash
-   adb shell dumpsys deviceidle whitelist +app.revanced.android.gms
-   ```
-
-   If you skip it and the head unit's wireless ADB is on, Maps offers **Do it now** at its first start. Tap it, then tick "Always allow" on Android's prompt and tap **Allow**. Maps keeps its own ADB key in the head unit's keystore and runs only this command with it.
-
-3. Turn OFF **MicroG RE** in BYD's **Disable Autostart**.
-4. Open MicroG-RE, grant its permissions and sign in.
-5. For Send to car, turn on **Cloud messaging** and keep **Device registration** on.
-6. For voice guidance, install [Google TTS for MicroG-RE](https://github.com/fangkampanat/google-tts-microg) and download your voices.
+1. Install `microg-7.3.0-icon-arm64-v8a.apk` from [MicroG-RE 7.3.0](https://github.com/MorpheApp/MicroG-RE/releases/tag/7.3.0). If another MicroG is installed, uninstall it first.
+2. Turn OFF **MicroG RE** in BYD's **Disable Autostart**.
+3. Open MicroG-RE and sign in.
+4. For Send to car, turn on **Cloud messaging** and keep **Device registration** on.
+5. For voice guidance, install [Google TTS for MicroG-RE](https://github.com/fangkampanat/google-tts-microg) and download your voices.
 
 ### 2. Patch in Morphe Desktop
 
@@ -89,8 +81,9 @@ Tested on a BYD Dolphin (DiLink 3.0, Android 10) with MicroG-RE 7.3.0.
 
 ### 3. Maps on the head unit
 
-1. Install the result and start **Maps**.
-2. For Send to car, turn OFF **Maps** in BYD's **Disable Autostart**. BYD turns it back on after each install or update.
+1. Install the result and start **Maps**. Allow every permission Android asks for.
+2. When Maps shows "MicroG-RE needs a setting", tap **Do it now**, tick "Always allow" on Android's prompt and tap **Allow**. Without it, MicroG-RE stops sending your location to Maps on DiLink 3.
+3. For Send to car, turn OFF **Maps** in BYD's **Disable Autostart**. BYD turns it back on after each install or update.
 
 ## Reporting problems
 
