@@ -1,19 +1,14 @@
 package app.morphe.extension.mapsautomotive.patches;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Application;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.content.res.AssetManager;
-import android.content.res.ColorStateList;
 import android.database.Cursor;
-import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -31,7 +26,6 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -157,7 +151,7 @@ public final class BydBatteryPatch {
      */
     private static final long TRIP_LOG_ADB_DELAY_MS = 3 * 60 * 1000L;
     private static final String KEY_TRIP_LOG_DISMISSED = "trip_log_dismissed";
-    /** The dialog's km per 1% from the whole percents alone once this many are measured in the battery's range. */
+    /** A range's km per 1% (above 90%, or 90% and below) from its whole percents alone once this many are measured. */
     private static final int MIN_KM_LEVELS = 5;
     /** Accepted learning windows before the learned consumption gives the km per 1% (else the speed bands, else none). */
     private static final int MIN_KM_WINDOWS = 3;
@@ -1368,19 +1362,42 @@ public final class BydBatteryPatch {
         return text.toString();
     }
 
+    /** The battery's share above 90% (91 to 100%), for the km per 1% of the whole battery. */
+    private static final double HIGH_SHARE = (100 - BydSpeedBands.HIGH_SOC) / 100.0;
+
     /**
-     * The dialog's km per 1%: the whole percents driven through in the battery's range (above 90% or not) once there are
-     * {@link #MIN_KM_LEVELS}; else this range's energy per percent over the speed bands' measured consumption, or the
-     * learned one after {@link #MIN_KM_WINDOWS} windows; NaN (learning) before. The learner's starting value alone gave
-     * 4.5 where the car did 3.2 (MC-6GXQ-QEMM).
+     * The dialog's km per 1%, one value for the whole battery, so it no longer changes when the battery passes 90% (the
+     * user, 2026-11-20; Details keeps the two ranges): each range weighted by its share of the battery, 10% above 90% and
+     * 90% below, so where the owner drove (a charge to 100%) does not pull it up. A range's value: its whole percents once
+     * {@link #MIN_KM_LEVELS}; else its energy per percent (its percents once {@link #MIN_LEVELS}; below 90% else the
+     * reading's own average) over the speed bands' measured consumption, or the learned one after {@link #MIN_KM_WINDOWS}
+     * windows. Without a value for 90% and below: NaN (learning); without one above 90%: the value below alone. The
+     * learner's starting value alone gave 4.5 where the car did 3.2 (MC-6GXQ-QEMM).
      */
     static double kmPerPercent(double soc, int energyWh, BydVehicleModel.Status model) {
-        BydSpeedBands.LevelStatus level = BydSpeedBands.levelStatus()[soc > BydSpeedBands.HIGH_SOC ? 0 : 1];
-        if (level.count >= MIN_KM_LEVELS && level.kmPerPercent > 0) return level.kmPerPercent;
+        BydSpeedBands.LevelStatus[] levels = BydSpeedBands.levelStatus();
         double consumption = BydSpeedBands.speedConsumption();
         if (!(consumption > 0) && model.windows >= MIN_KM_WINDOWS) consumption = model.consumption;
-        double whPerPercent = whPerPercent(soc, energyWh);
-        return consumption > 0 && whPerPercent > 0 ? whPerPercent / (consumption * 10) : Double.NaN;
+        double below = rangeKm(levels[1], consumption, energyWh / (soc + BydSocFraction.MIDPOINT));
+        if (Double.isNaN(below)) return Double.NaN;
+        double above = rangeKm(levels[0], consumption, Double.NaN);
+        return Double.isNaN(above) ? below : HIGH_SHARE * above + (1 - HIGH_SHARE) * below;
+    }
+
+    // One range's km per 1%: measured, else its energy per percent ([fallbackWh] with too few percents) over
+    // [consumption] (kWh/100 km); NaN without either.
+    private static double rangeKm(BydSpeedBands.LevelStatus level, double consumption, double fallbackWh) {
+        if (level.count >= MIN_KM_LEVELS && level.kmPerPercent > 0) return level.kmPerPercent;
+        double wh = level.count >= MIN_LEVELS ? level.kwhPerPercent * 1000 : fallbackWh;
+        return consumption > 0 && wh > 0 ? wh / (consumption * 10) : Double.NaN;
+    }
+
+    /** The whole battery's kWh per 1% for Details, weighted as {@link #kmPerPercent}; NaN before 3 percents at 90% and below. */
+    static double kwhPerPercent() {
+        BydSpeedBands.LevelStatus[] levels = BydSpeedBands.levelStatus();
+        if (levels[1].count < MIN_LEVELS) return Double.NaN;
+        if (levels[0].count < MIN_LEVELS) return levels[1].kwhPerPercent;
+        return HIGH_SHARE * levels[0].kwhPerPercent + (1 - HIGH_SHARE) * levels[1].kwhPerPercent;
     }
 
     // Settings row. The patch adds it to Maps' Settings list, before About & help.
@@ -1434,11 +1451,11 @@ public final class BydBatteryPatch {
             return;
         }
         Activity host = activity;
-        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(getSettingsTitle(host));
-        // The builder's context carries the dialog theme, so the views match the dialog background.
-        BatteryDialog views = new BatteryDialog(host, builder.getContext());
+        M3.Builder builder = new M3.Builder(host).setTitle(getSettingsTitle(host));
+        // The builder's context and colors (Maps' night or day), so the views match the dialog.
+        BatteryDialog views = new BatteryDialog(host, builder.getContext(), builder.colors());
         builder.setView(views.root).setPositiveButton(views.thai ? "ปิดหน้าต่าง" : "Close", null);
-        AlertDialog dialog = builder.create();
+        M3.Dialog dialog = builder.create();
         Handler main = new Handler(Looper.getMainLooper());
         Runnable refresh = new Runnable() {
             @Override
@@ -1453,17 +1470,22 @@ public final class BydBatteryPatch {
         dialog.show();
     }
 
-    /** The dialog's views. Colors come from the dialog theme; sizes are for a head unit at arm's length. */
+    /**
+     * The dialog's views, in Material 3 (M3, PLAN D39): Maps' night or day colors; sizes are for a head unit at arm's
+     * length. [primary] and [secondary] are the text colors, [accent] the scheme's primary.
+     */
     private static final class BatteryDialog {
         private static final float NAME_WEIGHT = 1.4f;
         final boolean thai;
         final ScrollView root;
         private final Activity host;
         private final Context themed;
+        private final M3.Colors colors;
         private final int primary, secondary, accent;
         private final LinearLayout content, battery, tripLogCard, load, arrival, phone, phoneDetails, lastSection, guidedSection, modelSection,
                 tripLogSection, usage, carSection, bandTable, levelTable;
-        private final Switch toggle, phoneToggle;
+        private final M3.Switch toggle, phoneToggle;
+        private final M3.LevelBar levelBar;
         private final View tripLogButtons;
         private final View batteryDivider, detailsDivider;
         private final TextView status, intro, percent, energy, batteryNote, healthNote, fallbackUsage, modelNotice, loadCaption,
@@ -1477,8 +1499,8 @@ public final class BydBatteryPatch {
         private int paintedChargingStop = -1, paintedDestination = -1;
         // The average over all speeds, then city, mixed, highway and above 90% SOC.
         private final Row[] rows = new Row[5];
-        // Per 1% of SOC: above 90%, then 90% and below.
-        private final Row[] levelRows = new Row[2];
+        // Per 1% of SOC: above 90%, 90% and below, then the whole battery (the main view's km per 1%).
+        private final Row[] levelRows = new Row[3];
         private int paintedLoad = -1;
         private boolean detailsOpen;
 
@@ -1486,13 +1508,14 @@ public final class BydBatteryPatch {
             TextView sub, measured, table, difference, pending;
         }
 
-        BatteryDialog(Activity host, Context themed) {
+        BatteryDialog(Activity host, Context themed, M3.Colors colors) {
             this.host = host;
             this.themed = themed;
+            this.colors = colors;
             thai = UiDensityPatch.isThai(host);
-            primary = themeColor(android.R.attr.textColorPrimary, new TextView(themed).getCurrentTextColor());
-            secondary = themeColor(android.R.attr.textColorSecondary, withAlpha(primary, 0xB3));
-            accent = themeColor(android.R.attr.colorAccent, primary);
+            primary = colors.onSurface;
+            secondary = colors.onSurfaceVariant;
+            accent = colors.primary;
 
             content = vertical();
             content.setPadding(0, px(4), 0, px(8));
@@ -1512,7 +1535,7 @@ public final class BydBatteryPatch {
             switchText.addView(switchTitle);
             switchText.addView(status);
             switchRow.addView(switchText, weight(1));
-            toggle = new Switch(themed);
+            toggle = new M3.Switch(themed, colors);
             toggle.setClickable(false);
             toggle.setFocusable(false);
             toggle.setChecked(isEnabled(host));
@@ -1526,59 +1549,59 @@ public final class BydBatteryPatch {
             intro.setPadding(px(24), px(4), px(24), px(8));
             content.addView(intro);
 
-            batteryDivider = divider();
-            content.addView(batteryDivider);
+            // Space above the battery card (shown with it).
+            batteryDivider = new View(themed);
+            content.addView(batteryDivider, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(4)));
 
-            // The battery: the percentage large, the energy and the distance per 1% beside it.
-            battery = horizontal();
-            battery.setPadding(px(24), px(12), px(24), px(4));
-            percent = text(40, primary, true);
+            // The battery in a card: the percentage large with the energy beside it (on one baseline), the level bar, then
+            // the distance per 1% and the outside temperature, and the battery's health when the car reports it.
+            battery = vertical();
+            M3.card(battery, colors);
+            battery.setPadding(px(20), px(16), px(20), px(16));
+            LinearLayout batteryTop = horizontal();
+            batteryTop.setGravity(Gravity.TOP);
+            percent = text(44, primary, true);
             percent.setIncludeFontPadding(false);
-            battery.addView(percent, wrap());
-            LinearLayout batteryText = vertical();
-            batteryText.setPadding(px(16), 0, 0, 0);
+            batteryTop.addView(percent, wrap());
             energy = text(17, primary, false);
+            energy.setPadding(px(12), 0, 0, 0);
+            batteryTop.addView(energy, weight(1));
+            battery.addView(batteryTop);
+            levelBar = new M3.LevelBar(themed, colors);
+            LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            barParams.setMargins(0, px(14), 0, px(10));
+            battery.addView(levelBar, barParams);
             batteryNote = text(14, secondary, false);
-            batteryText.addView(energy);
-            batteryText.addView(batteryNote);
-            // The battery health and temperatures from the car, when it reports them.
+            battery.addView(batteryNote);
             healthNote = text(14, secondary, false);
-            batteryText.addView(healthNote);
-            battery.addView(batteryText, weight(1));
-            content.addView(battery);
+            battery.addView(healthNote);
+            content.addView(battery, cardParams(8));
             // BYD's trip log, once: only when Maps could not read it by itself (tripLogCardWanted).
             tripLogCard = vertical();
-            GradientDrawable cardShape = new GradientDrawable();
-            cardShape.setCornerRadius(px(12));
-            cardShape.setStroke(px(1), withAlpha(primary, 0x40));
-            tripLogCard.setBackground(cardShape);
-            tripLogCard.setPadding(px(16), px(12), px(8), px(4));
+            M3.card(tripLogCard, colors);
+            tripLogCard.setPadding(px(20), px(16), px(20), px(16));
             tripLogCardText = text(15, primary, false);
             tripLogCardText.setLineSpacing(0, 1.2f);
-            tripLogCardText.setPadding(0, 0, px(8), 0);
             tripLogCard.addView(tripLogCardText);
             LinearLayout cardButtons = horizontal();
             cardButtons.setGravity(Gravity.END);
-            Button notNow = new Button(themed, null, android.R.attr.buttonBarButtonStyle);
-            notNow.setText(thai ? "ไม่ต้อง" : "Not now");
+            cardButtons.setPadding(0, px(12), 0, 0);
+            Button notNow = M3.button(themed, colors, thai ? "ไม่ต้อง" : "Not now", M3.GRAY);
             notNow.setOnClickListener(view -> {
                 dismissTripLogCard(host);
                 update();
             });
             cardButtons.addView(notNow, wrap());
-            Button allow = new Button(themed, null, android.R.attr.buttonBarButtonStyle);
-            allow.setText(thai ? "อนุญาต" : "Allow");
+            Button allow = M3.button(themed, colors, thai ? "อนุญาต" : "Allow", M3.FILLED);
             allow.setOnClickListener(view -> {
                 requestTripLog(host);
                 update();
             });
-            cardButtons.addView(allow, wrap());
+            cardButtons.addView(allow, after());
             tripLogCard.addView(cardButtons);
             tripLogButtons = cardButtons;
-            LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            cardParams.setMargins(px(24), px(12), px(24), px(4));
-            content.addView(tripLogCard, cardParams);
+            content.addView(tripLogCard, cardParams(12));
 
             // Without BYD's table: the consumption Maps plans with, which is the whole model there.
             fallbackUsage = text(15, primary, false);
@@ -1592,17 +1615,20 @@ public final class BydBatteryPatch {
 
             // People and luggage, one tap per preset; Maps gets the mass with the next reading.
             load = section(thai ? "ผู้โดยสารและสัมภาระ" : "People and luggage");
+            // A segmented button: the segments share their borders (each after the first overlaps the one before by the
+            // stroke) and take the height of the tallest label.
             LinearLayout chipRow = horizontal();
             for (int i = 0; i < LOADS_KG.length; i++) {
                 int preset = LOADS_KG[i];
                 TextView chip = text(15, primary, false);
                 chip.setGravity(Gravity.CENTER);
                 chip.setMinHeight(px(48));
-                chip.setPadding(px(6), px(4), px(6), px(4));
+                chip.setPadding(px(8), px(4), px(8), px(4));
                 chip.setText(chipName(preset, thai));
                 chip.setOnClickListener(view -> selectLoad(preset));
-                LinearLayout.LayoutParams params = weight(1);
-                params.setMargins(i == 0 ? 0 : px(4), px(4), i == LOADS_KG.length - 1 ? 0 : px(4), px(4));
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1);
+                // The stroke's own width (M3.segment rounds; px() here truncates).
+                params.setMargins(i == 0 ? 0 : -Math.max(1, M3.px(themed, 1)), px(4), 0, px(4));
                 chipRow.addView(chip, params);
                 chips[i] = chip;
             }
@@ -1622,7 +1648,7 @@ public final class BydBatteryPatch {
             phone = section(thai ? "แบตบนมือถือ" : "Battery on the phone");
             phoneStatus = text(14, secondary, false);
             phoneStatus.setLineSpacing(0, 1.2f);
-            phoneToggle = new Switch(themed);
+            phoneToggle = new M3.Switch(themed, colors);
             phoneToggle.setChecked(PhoneBattery.isOn(host));
             phone.addView(phoneSwitch(thai ? "แสดงแบตใน Google Maps บนมือถือ" : "Show the battery in Google Maps on the phone",
                     phoneStatus, phoneToggle, () -> PhoneBattery.choose(host, !PhoneBattery.isOn(host))));
@@ -1644,10 +1670,11 @@ public final class BydBatteryPatch {
             // The details, closed until asked for.
             detailsDivider = divider();
             content.addView(detailsDivider);
-            detailsToggle = text(15, accent, true);
-            detailsToggle.setMinHeight(px(48));
+            // A list row: the word, and a chevron at the end (down closed, up open; update()).
+            detailsToggle = text(16, primary, false);
+            detailsToggle.setMinHeight(px(56));
             detailsToggle.setGravity(Gravity.CENTER_VERTICAL);
-            detailsToggle.setPadding(px(24), 0, px(24), 0);
+            detailsToggle.setPadding(px(24), 0, px(20), 0);
             selectable(detailsToggle);
             detailsToggle.setOnClickListener(view -> {
                 detailsOpen = !detailsOpen;
@@ -1676,10 +1703,9 @@ public final class BydBatteryPatch {
             guidedFooter.setGravity(Gravity.CENTER_VERTICAL);
             guidedCaption = text(13, secondary, false);
             guidedFooter.addView(guidedCaption, weight(1));
-            Button export = new Button(themed, null, android.R.attr.buttonBarButtonStyle);
-            export.setText(thai ? "ส่งออกบันทึก" : "Export records");
+            Button export = M3.button(themed, colors, thai ? "ส่งออกบันทึก" : "Export records", M3.OUTLINED);
             export.setOnClickListener(view -> exportRecords());
-            guidedFooter.addView(export, wrap());
+            guidedFooter.addView(export, after());
             guidedSection.addView(guidedFooter);
 
             // Details: the model Maps receives, BYD's table adjusted with the values learned on this car.
@@ -1722,15 +1748,16 @@ public final class BydBatteryPatch {
             levelTable.addView(levelHeading);
             levelRows[0] = row(levelTable, thai ? "แบตมากกว่า 90%" : "Above 90%", null);
             levelRows[1] = row(levelTable, thai ? "แบต 90% ลงมา" : "90% and below", null);
+            levelRows[2] = row(levelTable, thai ? "เฉลี่ยทั้งแบต" : "Whole battery",
+                    thai ? "90% ลงมา 9 ส่วน เกิน 90% 1 ส่วน" : "nine parts at 90% and below, one above");
             usage.addView(levelTable);
             LinearLayout footer = horizontal();
             footer.setGravity(Gravity.CENTER_VERTICAL);
             usageCaption = text(13, secondary, false);
             footer.addView(usageCaption, weight(1));
-            Button reset = new Button(themed, null, android.R.attr.buttonBarButtonStyle);
-            reset.setText(thai ? "ล้างค่า" : "Reset");
+            Button reset = M3.button(themed, colors, thai ? "ล้างค่า" : "Reset", M3.OUTLINED);
             reset.setOnClickListener(view -> confirmResetLearning(host, this::update));
-            footer.addView(reset, wrap());
+            footer.addView(reset, after());
             usage.addView(footer);
 
             // Details: the car and its battery.
@@ -1797,11 +1824,13 @@ public final class BydBatteryPatch {
             if (sampledAt == 0) {
                 percent.setText("–");
                 percent.setTextColor(secondary);
+                levelBar.setLevel(Float.NaN, colors);
                 energy.setText(thai ? "รออ่านแบตเตอรี่จากรถ" : "Waiting for the car's battery");
                 show(batteryNote, false);
             } else {
                 percent.setText(String.format(Locale.ROOT, "%.0f%%", sampleSoc));
                 percent.setTextColor(fresh ? primary : secondary);
+                levelBar.setLevel((float) (sampleSoc / 100), colors);
                 energy.setText(BydCapacityText.energyLine(sampleEnergyWh, sampleCapacityWh, sampleCapacityFrom, thai));
                 StringBuilder note = new StringBuilder();
                 if (!fresh) note.append(thai ? "อ่านเมื่อ " : "read ").append(ago(now - sampledAt, thai));
@@ -1864,7 +1893,9 @@ public final class BydBatteryPatch {
 
             show(detailsDivider, true);
             show(detailsToggle, true);
-            detailsToggle.setText((thai ? "รายละเอียด" : "Details") + (detailsOpen ? "  ▴" : "  ▾"));
+            detailsToggle.setText(thai ? "รายละเอียด" : "Details");
+            detailsToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
+                    new M3.Chevron(px(24), secondary, detailsOpen), null);
 
             show(guidedSection, detailsOpen);
             guidedText.setText(earlierDrivesText(thai));
@@ -1931,6 +1962,16 @@ public final class BydBatteryPatch {
                 } else {
                     pending(levelRows[i], thai ? "ยังไม่มีข้อมูล" : "no data yet");
                 }
+            }
+            // The whole battery: the main view's value (the two ranges weighted 1 to 9), so the two always agree.
+            double wholeKm = kmPerPercent(sampleSoc, sampleEnergyWh, model), wholeKwh = kwhPerPercent();
+            long counted = levels[0].count + levels[1].count;
+            if (Double.isNaN(wholeKm)) {
+                pending(levelRows[2], thai ? "ยังไม่มีข้อมูล" : "no data yet");
+            } else {
+                values(levelRows[2], String.format(Locale.ROOT, "%.1f", wholeKm),
+                        Double.isNaN(wholeKwh) ? "–" : String.format(Locale.ROOT, "%.2f", wholeKwh),
+                        thai ? counted + " ครั้ง" : counted + "×");
             }
 
             show(carSection, detailsOpen);
@@ -2127,29 +2168,17 @@ public final class BydBatteryPatch {
             return text;
         }
 
+        // The load presets: one segmented button.
         private void paintChips() {
             paintedLoad = loadKg;
-            for (int i = 0; i < chips.length; i++) styleChip(chips[i], LOADS_KG[i] == loadKg);
-        }
-
-        private void styleChip(TextView chip, boolean selected) {
-            int ripple = withAlpha(primary, 0x29);
-            GradientDrawable shape = new GradientDrawable();
-            shape.setCornerRadius(px(10));
-            shape.setColor(selected ? withAlpha(accent, 0x38) : Color.TRANSPARENT);
-            shape.setStroke(px(selected ? 2 : 1), selected ? accent : withAlpha(secondary, 0x80));
-            // A transparent chip would mask the ripple to its outline, so the mask is solid.
-            GradientDrawable mask = new GradientDrawable();
-            mask.setCornerRadius(px(10));
-            mask.setColor(Color.WHITE);
-            chip.setBackground(new RippleDrawable(ColorStateList.valueOf(ripple), shape, mask));
-            chip.setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            chip.setSelected(selected);
+            for (int i = 0; i < chips.length; i++) {
+                M3.segment(chips[i], colors, LOADS_KG[i] == loadKg, i == 0, i == chips.length - 1);
+            }
         }
 
         // A switch row of Battery on the phone: the title and [statusText] on the left, [toggle] on the right. The whole
         // row is the touch target; [flip] stores the new choice, then the dialog refreshes.
-        private LinearLayout phoneSwitch(String title, TextView statusText, Switch toggle, Runnable flip) {
+        private LinearLayout phoneSwitch(String title, TextView statusText, M3.Switch toggle, Runnable flip) {
             LinearLayout row = horizontal();
             row.setMinimumHeight(px(56));
             row.setPadding(0, px(4), 0, px(4));
@@ -2172,21 +2201,23 @@ public final class BydBatteryPatch {
 
         // A label and one chip per choice of [level] (Auto, then the percentages), added to the arrival section.
         private void arrivalChips(String level, TextView[] levelChips, String label) {
-            TextView caption = text(15, primary, false);
+            TextView caption = text(14, secondary, false);
             caption.setText(label);
-            caption.setPadding(0, px(4), 0, 0);
+            caption.setPadding(0, px(8), 0, 0);
             arrival.addView(caption);
             int[] choices = ArrivalBattery.choices(level);
+            // Filter chips, as tall as the tallest of the row.
             LinearLayout chipRow = horizontal();
             for (int i = 0; i < choices.length; i++) {
                 int choice = choices[i];
                 TextView chip = text(15, primary, false);
                 chip.setGravity(Gravity.CENTER);
                 chip.setMinHeight(px(48));
-                chip.setPadding(px(4), px(4), px(4), px(4));
+                chip.setPadding(px(6), px(4), px(6), px(4));
                 chip.setText(choice == ArrivalBattery.AUTO ? (thai ? "อัตโนมัติ" : "Auto") : choice + "%");
                 chip.setOnClickListener(view -> selectArrival(level, choice));
-                LinearLayout.LayoutParams params = weight(choice == ArrivalBattery.AUTO ? 1.6f : 1);
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT,
+                        choice == ArrivalBattery.AUTO ? 1.6f : 1);
                 params.setMargins(i == 0 ? 0 : px(4), px(4), i == choices.length - 1 ? 0 : px(4), px(4));
                 chipRow.addView(chip, params);
                 levelChips[i] = chip;
@@ -2201,7 +2232,7 @@ public final class BydBatteryPatch {
         }
 
         private void paintChoices(TextView[] levelChips, int[] choices, int selected) {
-            for (int i = 0; i < levelChips.length; i++) styleChip(levelChips[i], choices[i] == selected);
+            for (int i = 0; i < levelChips.length; i++) M3.chip(levelChips[i], colors, choices[i] == selected);
         }
 
         // What Auto is, and Google's levels once Maps used them (the labels above the chips say what the choices do).
@@ -2385,32 +2416,36 @@ public final class BydBatteryPatch {
             return cell;
         }
 
+        // A section: its label (M3: primary, medium), then what the caller adds.
         private LinearLayout section(String title) {
             LinearLayout section = vertical();
-            section.setPadding(px(24), px(16), px(24), 0);
-            TextView header = text(14, accent, true);
-            header.setText(title);
-            header.setPadding(0, 0, 0, px(4));
+            section.setPadding(px(24), px(20), px(24), 0);
+            TextView header = M3.label(themed, colors, title);
+            header.setPadding(0, 0, 0, px(8));
             section.addView(header);
             content.addView(section);
             return section;
         }
 
         private View divider() {
-            View divider = new View(themed);
-            divider.setBackgroundColor(withAlpha(secondary, 0x40));
+            View divider = M3.divider(themed, colors);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, px(1)));
-            params.setMargins(px(24), px(4), px(24), px(4));
+            params.setMargins(0, px(16), 0, 0);
             divider.setLayoutParams(params);
             return divider;
         }
 
-        private TextView text(int sp, int color, boolean bold) {
-            TextView view = new TextView(themed);
-            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-            view.setTextColor(color);
-            if (bold) view.setTypeface(Typeface.DEFAULT_BOLD);
-            return view;
+        // A card's place in the content: the dialog's side margins, [top] dp above.
+        private LinearLayout.LayoutParams cardParams(int top) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            params.setMargins(px(24), px(top), px(24), 0);
+            return params;
+        }
+
+        // [medium] is M3's medium weight (the old bold).
+        private TextView text(int sp, int color, boolean medium) {
+            return M3.text(themed, sp, color, medium);
         }
 
         private LinearLayout vertical() {
@@ -2427,22 +2462,7 @@ public final class BydBatteryPatch {
         }
 
         private void selectable(View view) {
-            TypedValue ripple = new TypedValue();
-            if (themed.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)) {
-                view.setBackgroundResource(ripple.resourceId);
-            }
-        }
-
-        private int themeColor(int attribute, int fallback) {
-            TypedValue value = new TypedValue();
-            if (!themed.getTheme().resolveAttribute(attribute, value, true)) return fallback;
-            if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT && value.type <= TypedValue.TYPE_LAST_COLOR_INT) return value.data;
-            try {
-                if (value.resourceId != 0) return themed.getColorStateList(value.resourceId).getDefaultColor();
-            } catch (RuntimeException error) {
-                ReportLog.w(TAG, "Dialog color " + attribute + " unavailable", error);
-            }
-            return fallback;
+            M3.selectable(view, colors);
         }
 
         private int px(int dp) {
@@ -2457,6 +2477,13 @@ public final class BydBatteryPatch {
             return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         }
 
+        // A button after a caption or another button: 8 dp apart.
+        private LinearLayout.LayoutParams after() {
+            LinearLayout.LayoutParams params = wrap();
+            params.setMarginStart(px(8));
+            return params;
+        }
+
         private static void show(View view, boolean visible) {
             int visibility = visible ? View.VISIBLE : View.GONE;
             if (view.getVisibility() != visibility) view.setVisibility(visibility);
@@ -2465,10 +2492,6 @@ public final class BydBatteryPatch {
         private static void join(StringBuilder text, String part) {
             if (text.length() > 0) text.append(" · ");
             text.append(part);
-        }
-
-        private static int withAlpha(int color, int alpha) {
-            return color & 0x00FFFFFF | alpha << 24;
         }
     }
 
@@ -2573,7 +2596,8 @@ public final class BydBatteryPatch {
     private static void confirmResetLearning(Activity activity, Runnable done) {
         boolean thai = UiDensityPatch.isThai(activity);
         boolean comparison = energyFile != null;
-        new AlertDialog.Builder(activity)
+        new M3.Builder(activity)
+                .setDestructive()
                 .setTitle(comparison ? (thai ? "ล้างค่าที่วัดได้?" : "Reset the measured values?")
                         : (thai ? "ล้างค่าที่เรียนรู้?" : "Reset learning?"))
                 .setMessage(comparison
@@ -2609,7 +2633,7 @@ public final class BydBatteryPatch {
     // dialog stays open behind this one, so Cancel returns to it unchanged.
     private static void confirmRestart(Activity activity, boolean enable) {
         boolean thai = UiDensityPatch.isThai(activity);
-        new AlertDialog.Builder(activity)
+        new M3.Builder(activity)
                 .setTitle(enable ? (thai ? "เปิดใช้แบตเตอรี่รถใน Maps?" : "Use the car's battery in Maps?")
                         : (thai ? "เลิกใช้แบตเตอรี่รถใน Maps?" : "Stop using the car's battery in Maps?"))
                 .setMessage(thai

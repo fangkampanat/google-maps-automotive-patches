@@ -1,7 +1,6 @@
 package app.morphe.extension.mapsautomotive.patches;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.SharedPreferences;
@@ -278,7 +277,7 @@ public final class UiDensityPatch {
             labels[index] = describedLabel(host, CHOICES[index], false);
             if (CHOICES[index] == current) checked = index;
         }
-        new AlertDialog.Builder(host)
+        new M3.Builder(host)
                 .setTitle(getSettingsTitle(host))
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     dialog.dismiss();
@@ -292,7 +291,7 @@ public final class UiDensityPatch {
     private static void confirmRestart(Activity activity, int densityDpi) {
         boolean thai = isThai(activity);
         String label = choiceLabel(activity, densityDpi);
-        new AlertDialog.Builder(activity)
+        new M3.Builder(activity)
                 .setTitle(getSettingsTitle(activity))
                 .setMessage(thai
                         ? "Maps จะเริ่มใหม่เพื่อใช้ " + label + " การนำทางที่กำลังทำงานจะหยุด"

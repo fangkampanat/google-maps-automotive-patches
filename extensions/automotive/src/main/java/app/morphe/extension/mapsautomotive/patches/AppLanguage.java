@@ -1,7 +1,6 @@
 package app.morphe.extension.mapsautomotive.patches;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
@@ -286,7 +285,7 @@ public final class AppLanguage {
             labels[index] = choiceLabel(host, CHOICES[index]);
             if (CHOICES[index].equals(current)) checked = index;
         }
-        new AlertDialog.Builder(host)
+        new M3.Builder(host)
                 .setTitle(getSettingsTitle(host))
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     dialog.dismiss();
@@ -306,7 +305,7 @@ public final class AppLanguage {
         ReportBuilder.saveSnapshot(activity.getApplicationContext(), true);
         boolean thai = UiDensityPatch.isThai(activity);
         String label = choiceLabel(activity, language);
-        new AlertDialog.Builder(activity)
+        new M3.Builder(activity)
                 .setTitle(getSettingsTitle(activity))
                 .setMessage(thai
                         ? "บันทึกแล้ว จะใช้ " + label + " เมื่อเปิด Language อีกครั้งใน " + ReportPatch.reportPlace(activity, true)
@@ -320,7 +319,7 @@ public final class AppLanguage {
     private static void confirmRestart(Activity activity, String language) {
         boolean thai = UiDensityPatch.isThai(activity);
         String label = choiceLabel(activity, language);
-        new AlertDialog.Builder(activity)
+        new M3.Builder(activity)
                 .setTitle(getSettingsTitle(activity))
                 .setMessage(thai
                         ? "Maps จะเริ่มใหม่เพื่อใช้ " + label + " การนำทางที่กำลังทำงานจะหยุด"

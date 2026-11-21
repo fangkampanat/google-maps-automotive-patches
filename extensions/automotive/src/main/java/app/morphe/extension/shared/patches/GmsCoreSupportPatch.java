@@ -27,8 +27,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.util.Pair;
-import android.widget.LinearLayout;
 
 import androidx.annotation.Nullable;
 
@@ -40,6 +38,7 @@ import java.util.Locale;
 
 import app.morphe.extension.mapsautomotive.patches.BydBatteryPatch;
 import app.morphe.extension.mapsautomotive.patches.CarAdb;
+import app.morphe.extension.mapsautomotive.patches.M3;
 import app.morphe.extension.mapsautomotive.patches.UiDensityPatch;
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.ResourceType;
@@ -48,7 +47,6 @@ import app.morphe.extension.shared.Utils;
 import app.morphe.extension.shared.requests.Requester;
 import app.morphe.extension.shared.requests.Route;
 import app.morphe.extension.shared.settings.SharedSettings;
-import app.morphe.extension.shared.ui.CustomDialog;
 
 @SuppressWarnings("unused")
 public class GmsCoreSupportPatch {
@@ -140,20 +138,15 @@ public class GmsCoreSupportPatch {
                 "Or tap Do it now. When Android asks \"Allow USB debugging?\", tick \"Always allow\" and tap Allow."
                         + " Maps then runs this command through the car's own ADB.");
         Utils.runOnMainThreadDelayed(() -> {
-            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                    context,
-                    text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"),
-                    withButton,
-                    null, // No EditText.
-                    text(context, "ทำให้เลย", "Do it now"),
-                    () -> CarAdb.whitelist(context, GMS_CORE_PACKAGE_NAME, WHITELIST_COMMAND),
-                    null, // No Cancel button.
-                    text(context, "ไว้ทีหลัง", "Later"),
-                    () -> { },
-                    true // Dismiss dialog when onNeutralClick.
-            );
-            Dialog dialog = dialogPair.first;
-            dialog.setCancelable(true);
+            // Maps Car's Material 3 dialog (PLAN D39): Later beside Do it now.
+            Dialog dialog = new M3.Builder(context)
+                    .setTitle(text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"))
+                    .setMessage(withButton)
+                    .setPositiveButton(text(context, "ทำให้เลย", "Do it now"),
+                            (shown, which) -> CarAdb.whitelist(context, GMS_CORE_PACKAGE_NAME, WHITELIST_COMMAND))
+                    .setNegativeButton(text(context, "ไว้ทีหลัง", "Later"), null)
+                    .setCancelable(true)
+                    .create();
             Utils.showDialog(context, dialog, true, null);
         }, 100);
     }
@@ -168,25 +161,14 @@ public class GmsCoreSupportPatch {
         // Use a delay to allow the activity to finish initializing.
         // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
         Utils.runOnMainThreadDelayed(() -> {
-            // Create the custom dialog.
-            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                    context,
-                    title, // Title.
-                    dialogMessage, // Message.
-                    null, // No EditText.
-                    positiveButtonText, // OK button text.
-                    () -> onPositiveClickListener.onClick(null, 0), // Convert DialogInterface.OnClickListener to Runnable.
-                    null, // No Cancel button action.
-                    null, // No Neutral button text.
-                    null, // No Neutral button action.
-                    true // Dismiss dialog when onNeutralClick.
-            );
-
-            Dialog dialog = dialogPair.first;
-
-            // Do not set cancelable too false to allow using back button to skip the action,
-            // just in case the battery change can never be satisfied.
-            dialog.setCancelable(true);
+            // Maps Car's Material 3 dialog (PLAN D39). The listener gets no dialog and 0, as with the library's dialog.
+            // Cancelable, so Back skips the action, in case the battery change can never be satisfied.
+            Dialog dialog = new M3.Builder(context)
+                    .setTitle(title)
+                    .setMessage(dialogMessage)
+                    .setPositiveButton(positiveButtonText, (shown, which) -> onPositiveClickListener.onClick(null, 0))
+                    .setCancelable(true)
+                    .create();
 
             // Show the dialog
             Utils.showDialog(context, dialog, true, onShown == null ? null : shown -> onShown.run());

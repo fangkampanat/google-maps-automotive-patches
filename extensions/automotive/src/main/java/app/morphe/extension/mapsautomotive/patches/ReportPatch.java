@@ -1,7 +1,6 @@
 package app.morphe.extension.mapsautomotive.patches;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Application;
 import android.content.ComponentName;
 import android.content.Context;
@@ -30,7 +29,6 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -432,7 +430,7 @@ public final class ReportPatch {
 
     /** The report server refuses this version's reports (ReportUploader.updateBeforeReport): update to [target] first. */
     private static void showUpdateFirst(Activity host, String target, boolean thai) {
-        new AlertDialog.Builder(host)
+        new M3.Builder(host)
                 .setTitle(thai ? "อัปเดตก่อน" : "Update first")
                 .setMessage(thai ? "เวอร์ชันนี้ส่งรายงานไม่ได้แล้ว อัปเดตเป็น " + target + " ก่อน แล้วค่อยส่งรายงาน"
                         : "This version can no longer send reports. Update to " + target + " first, then send the report.")
@@ -469,7 +467,7 @@ public final class ReportPatch {
             showGitHub(host, entry.id, entry.patchesVersion, entry.appVersion, thai);
             return;
         }
-        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(thai ? "คุยกับผู้พัฒนา" : "Talk to the developer");
+        M3.Builder builder = new M3.Builder(host).setTitle(thai ? "คุยกับผู้พัฒนา" : "Talk to the developer");
         Views views = new Views(builder.getContext());
         int screen = Math.min(host.getResources().getDisplayMetrics().widthPixels, host.getResources().getDisplayMetrics().heightPixels);
         QrLayout layout = QrLayout.of(host, views, Math.min(views.px(280), screen / 2));
@@ -531,7 +529,7 @@ public final class ReportPatch {
         }
         // Both, or the text does not say "versions".
         boolean versionsFilled = bundleFilled && mapsFilled;
-        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(thai ? "แจ้งปัญหาที่ GitHub" : "Report on GitHub");
+        M3.Builder builder = new M3.Builder(host).setTitle(thai ? "แจ้งปัญหาที่ GitHub" : "Report on GitHub");
         Views views = new Views(builder.getContext());
         int screen = Math.min(host.getResources().getDisplayMetrics().widthPixels, host.getResources().getDisplayMetrics().heightPixels);
         QrLayout layout = QrLayout.of(host, views, Math.min(views.px(280), screen / 2));
@@ -663,7 +661,7 @@ public final class ReportPatch {
         }
 
         /** After show(): the dialog's window takes the width. */
-        void apply(AlertDialog dialog) {
+        void apply(M3.Dialog dialog) {
             try {
                 Window window = dialog.getWindow();
                 if (window != null) window.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -691,7 +689,7 @@ public final class ReportPatch {
                 + "Two more crashes within 10 minutes bring safe mode back.")
                 : (thai ? "ปิดฟีเจอร์ที่สงสัย แล้วกดเริ่มแอปใหม่ด้านล่าง"
                 : "Turn off a feature you suspect, then restart the app below.")));
-        List<Switch> switches = new ArrayList<>();
+        List<M3.Switch> switches = new ArrayList<>();
         for (String feature : SafeMode.FEATURES) {
             if (!SafeMode.included(feature)) continue;
             LinearLayout row = views.horizontal();
@@ -705,7 +703,7 @@ public final class ReportPatch {
             texts.addView(title);
             texts.addView(sub);
             row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            Switch toggle = new Switch(views.themed);
+            M3.Switch toggle = views.toggle();
             toggle.setTag(feature);
             // In safe mode every feature is off, and the switches show that; the user turns on the ones to try.
             Boolean pending = pendingSwitches.get(feature);
@@ -718,14 +716,14 @@ public final class ReportPatch {
         }
         TextView allOn = views.action(thai ? "เลือกเปิดทุกฟีเจอร์" : "Select all features");
         allOn.setOnClickListener(view -> {
-            for (Switch toggle : switches) toggle.setChecked(true);
+            for (M3.Switch toggle : switches) toggle.setChecked(true);
         });
         content.addView(allOn);
         TextView restart = views.action(thai ? "เริ่มแอปใหม่ด้วยฟีเจอร์ที่เลือก" : "Restart the app with these features");
         restart.setOnClickListener(view -> {
             Map<String, Boolean> chosen = new HashMap<>();
-            for (Switch toggle : switches) chosen.put((String) toggle.getTag(), toggle.isChecked());
-            new AlertDialog.Builder(host)
+            for (M3.Switch toggle : switches) chosen.put((String) toggle.getTag(), toggle.isChecked());
+            new M3.Builder(host)
                     .setTitle(thai ? "เริ่มแอปใหม่?" : "Restart the app?")
                     .setMessage(thai ? "แอปจะปิดแล้วเปิดใหม่ด้วยฟีเจอร์ที่เลือก การนำทางที่กำลังทำงานจะหยุด"
                             : "The app closes and opens again with the chosen features. Active navigation stops.")
@@ -824,7 +822,8 @@ public final class ReportPatch {
 
     private static void confirmDelete(Activity host, ReportStore.Entry entry, boolean thai, Runnable refresh) {
         boolean sent = ReportStore.SENT.equals(entry.state);
-        new AlertDialog.Builder(host)
+        new M3.Builder(host)
+                .setDestructive()
                 .setTitle(thai ? "ลบรายงาน?" : "Delete the report?")
                 .setMessage(sent
                         ? (thai ? "ลบรายงาน " + entry.id + " จากเซิร์ฟเวอร์และจากรายการนี้" : "Deletes report " + entry.id + " from the server and this list.")
@@ -846,7 +845,7 @@ public final class ReportPatch {
         boolean thai = UiDensityPatch.isThai(host);
         // The report screen is not Maps' window: the window state comes from the main process (ReportBuilder).
         ReportBuilder.Screen screen = new ReportBuilder.Screen();
-        AlertDialog progress = new AlertDialog.Builder(host)
+        M3.Dialog progress = new M3.Builder(host)
                 .setTitle(getSettingsTitle(host))
                 .setMessage(thai ? "กำลังรวบรวมข้อมูล…" : "Collecting the report…")
                 .setNegativeButton(thai ? "ยกเลิก" : "Cancel", null)
@@ -884,7 +883,7 @@ public final class ReportPatch {
     }
 
     private static void showPreview(Activity host, ReportBuilder.Draft draft, boolean thai) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(thai ? "ตรวจรายงานก่อนส่ง" : "Review the report");
+        M3.Builder builder = new M3.Builder(host).setTitle(thai ? "ตรวจรายงานก่อนส่ง" : "Review the report");
         Views views = new Views(builder.getContext());
         LinearLayout content = views.vertical();
         content.setPadding(0, views.px(4), 0, views.px(8));
@@ -894,13 +893,17 @@ public final class ReportPatch {
         // keyboard stays down until the box is tapped.
         content.setFocusableInTouchMode(true);
         EditText comment = new EditText(views.themed);
+        // An outlined M3 field; the text 16 sp, as the screen's paragraphs.
+        M3.field(comment, views.colors);
+        comment.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        comment.setGravity(Gravity.TOP | Gravity.START);
         comment.setHint(thai ? "อธิบายปัญหา (ไม่บังคับ) เช่น ทำอะไรอยู่ เกิดอะไรขึ้น ตอนกี่โมง" : "What happened, and when? (optional)");
         comment.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         comment.setMinLines(2);
         comment.setMaxLines(6);
         comment.setFilters(new InputFilter[]{new InputFilter.LengthFilter(ReportBuilder.MAX_COMMENT_CHARS)});
         LinearLayout.LayoutParams commentLayout = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        commentLayout.setMargins(views.px(20), views.px(8), views.px(20), views.px(4));
+        commentLayout.setMargins(views.px(24), views.px(8), views.px(24), views.px(4));
         content.addView(comment, commentLayout);
 
         TextView summary = views.paragraph("");
@@ -973,13 +976,13 @@ public final class ReportPatch {
                 .setPositiveButton(thai ? "ส่ง" : "Send", null)
                 .setNegativeButton(thai ? "ยกเลิก" : "Cancel", null)
                 .setNeutralButton(thai ? "ดูข้อมูลทั้งหมด" : "View all data", null);
-        AlertDialog dialog = builder.create();
+        M3.Dialog dialog = builder.create();
         dialog.setOnShowListener(shown -> {
             // These buttons keep the preview open.
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> showLines(host, thai
+            dialog.getButton(M3.Dialog.BUTTON_NEUTRAL).setOnClickListener(view -> showLines(host, thai
                     ? "ข้อมูลที่จะส่ง (ข้อความและการยินยอมเพิ่มตอนกดส่ง)" : "Data to send (comment and consent added at Send)",
                     jsonLines(draft.report), thai));
-            Button send = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            Button send = dialog.getButton(M3.Dialog.BUTTON_POSITIVE);
             send.setOnClickListener(view -> send(host, dialog, send, draft, comment.getText().toString(), thai));
         });
         dialog.show();
@@ -1098,7 +1101,7 @@ public final class ReportPatch {
     }
 
     // Send: the final body off the main thread, then the queue and the status.
-    private static void send(Activity host, AlertDialog preview, Button button, ReportBuilder.Draft draft, String comment, boolean thai) {
+    private static void send(Activity host, M3.Dialog preview, Button button, ReportBuilder.Draft draft, String comment, boolean thai) {
         button.setEnabled(false);
         Context app = host.getApplicationContext();
         Utils.runOnBackgroundThread(() -> {
@@ -1139,7 +1142,7 @@ public final class ReportPatch {
 
     // Sending, then the report ID in large text and a button for the QR code of its conversation page.
     private static void showStatus(Activity host, String key, boolean thai) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(getSettingsTitle(host));
+        M3.Builder builder = new M3.Builder(host).setTitle(getSettingsTitle(host));
         Views views = new Views(builder.getContext());
         LinearLayout content = views.vertical();
         content.setPadding(views.px(24), views.px(8), views.px(24), views.px(8));
@@ -1154,13 +1157,13 @@ public final class ReportPatch {
         content.addView(note);
         builder.setView(content).setPositiveButton(thai ? "ปิดหน้าต่าง" : "Close", null)
                 .setNeutralButton(thai ? "QR สำหรับคุยกับผู้พัฒนา" : "QR code to talk", null);
-        AlertDialog dialog = builder.create();
+        M3.Dialog dialog = builder.create();
         // Creates the buttons now, so the QR button is hidden or shown before the first frame.
         dialog.create();
         Context app = host.getApplicationContext();
         // The sent entry with its ID, for the QR button.
         ReportStore.Entry[] sentEntry = new ReportStore.Entry[1];
-        Button qr = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+        Button qr = dialog.getButton(M3.Dialog.BUTTON_NEUTRAL);
         // Its own listener keeps the status open under the QR code.
         if (qr != null) qr.setOnClickListener(view -> {
             ReportStore.Entry shown = sentEntry[0];
@@ -1216,7 +1219,7 @@ public final class ReportPatch {
 
     // A long text, one list row per line, so thousands of lines scroll smoothly.
     private static void showLines(Activity host, String title, List<String> lines, boolean thai) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(title);
+        M3.Builder builder = new M3.Builder(host).setTitle(title);
         Views views = new Views(builder.getContext());
         ListView list = new ListView(views.themed);
         list.setAdapter(new BaseAdapter() {
@@ -1250,7 +1253,7 @@ public final class ReportPatch {
     }
 
     private static void message(Activity host, String text) {
-        new AlertDialog.Builder(host).setTitle(getSettingsTitle(host)).setMessage(text).setPositiveButton("OK", null).show();
+        new M3.Builder(host).setTitle(getSettingsTitle(host)).setMessage(text).setPositiveButton("OK", null).show();
     }
 
     private static List<String> jsonLines(JSONObject report) {
@@ -1297,24 +1300,26 @@ public final class ReportPatch {
         text.append(value).append('\n');
     }
 
-    /** Views styled from the dialog theme, sized for a head unit at arm's length. */
+    /**
+     * Views in Material 3 (M3, PLAN D39) and Maps' night or day colors, sized for a head unit at arm's length. [primary]
+     * and [secondary] are the text colors, [accent] the scheme's primary.
+     */
     static final class Views {
         final Context themed;
+        final M3.Colors colors;
         final int primary, secondary, accent;
 
         Views(Context themed) {
             this.themed = themed;
-            primary = color(android.R.attr.textColorPrimary, new TextView(themed).getCurrentTextColor());
-            secondary = color(android.R.attr.textColorSecondary, primary & 0x00FFFFFF | 0xB3 << 24);
-            accent = color(android.R.attr.colorAccent, primary);
+            colors = M3.colors(themed);
+            primary = colors.onSurface;
+            secondary = colors.onSurfaceVariant;
+            accent = colors.primary;
         }
 
-        TextView text(int sp, int color, boolean bold) {
-            TextView view = new TextView(themed);
-            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-            view.setTextColor(color);
-            if (bold) view.setTypeface(Typeface.DEFAULT_BOLD);
-            return view;
+        // [medium] is M3's medium weight (the old bold).
+        TextView text(int sp, int color, boolean medium) {
+            return M3.text(themed, sp, color, medium);
         }
 
         TextView paragraph(CharSequence value) {
@@ -1332,20 +1337,21 @@ public final class ReportPatch {
             view.setMinHeight(px(48));
             view.setGravity(Gravity.CENTER_VERTICAL);
             view.setPadding(px(24), 0, px(24), 0);
-            TypedValue ripple = new TypedValue();
-            if (themed.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)) {
-                view.setBackgroundResource(ripple.resourceId);
-            }
+            M3.selectable(view, colors);
             return view;
         }
 
         View divider() {
-            View divider = new View(themed);
-            divider.setBackgroundColor(secondary & 0x00FFFFFF | 0x40 << 24);
+            View divider = M3.divider(themed, colors);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, px(1)));
-            params.setMargins(px(24), px(8), px(24), px(8));
+            params.setMargins(0, px(8), 0, px(8));
             divider.setLayoutParams(params);
             return divider;
+        }
+
+        /** The M3 switch in these colors. */
+        M3.Switch toggle() {
+            return new M3.Switch(themed, colors);
         }
 
         LinearLayout vertical() {
@@ -1363,18 +1369,6 @@ public final class ReportPatch {
 
         int px(int dp) {
             return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, dp, themed.getResources().getDisplayMetrics());
-        }
-
-        private int color(int attribute, int fallback) {
-            TypedValue value = new TypedValue();
-            if (!themed.getTheme().resolveAttribute(attribute, value, true)) return fallback;
-            if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT && value.type <= TypedValue.TYPE_LAST_COLOR_INT) return value.data;
-            try {
-                if (value.resourceId != 0) return themed.getColorStateList(value.resourceId).getDefaultColor();
-            } catch (RuntimeException ignored) {
-                // The fallback.
-            }
-            return fallback;
         }
     }
 }

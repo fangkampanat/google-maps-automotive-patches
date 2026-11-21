@@ -1,7 +1,6 @@
 package app.morphe.extension.mapsautomotive.patches;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
@@ -114,9 +113,9 @@ public final class CarAdb {
                     Toast.LENGTH_LONG).show();
             return;
         }
-        AlertDialog waiting;
+        M3.Dialog waiting;
         try {
-            waiting = new AlertDialog.Builder(activity)
+            waiting = new M3.Builder(activity)
                     .setTitle(thai ? "ตั้งค่า MicroG-RE" : "MicroG-RE setting")
                     .setMessage(thai
                             ? "ถ้า Android ถามเรื่องการแก้ไขข้อบกพร่องผ่าน USB ให้ติ๊ก อนุญาตจากคอมพิวเตอร์เครื่องนี้เสมอ"
@@ -628,7 +627,7 @@ public final class CarAdb {
                     + adbCommand;
         }
         try {
-            new AlertDialog.Builder(activity)
+            new M3.Builder(activity)
                     .setTitle(thai ? "ตั้งค่า MicroG-RE" : "MicroG-RE setting")
                     .setMessage(message)
                     .setPositiveButton(thai ? "ตกลง" : "OK", null)

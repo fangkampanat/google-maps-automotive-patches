@@ -3,7 +3,6 @@ package app.morphe.extension.mapsautomotive.patches;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.ActivityOptions;
-import android.app.AlertDialog;
 import android.app.Application;
 import android.app.Notification;
 import android.app.NotificationManager;
@@ -14,16 +13,12 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.RectF;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.net.Uri;
@@ -33,7 +28,6 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.service.notification.StatusBarNotification;
-import android.util.TypedValue;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -46,7 +40,6 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TextView;
 
 import org.json.JSONException;
@@ -1055,7 +1048,7 @@ public final class FloatingMaps {
         }
         Activity host = activity;
         boolean thai = UiDensityPatch.isThai(host);
-        AlertDialog.Builder builder = new AlertDialog.Builder(host).setTitle(getSettingsTitle(host));
+        M3.Builder builder = new M3.Builder(host).setTitle(getSettingsTitle(host));
         if (!SafeMode.on(host, SafeMode.FLOATING_MAPS)) {
             builder.setMessage((thai ? "ตอนนี้ปิดอยู่ในสวิตช์ของ " : "It is switched off in ") + ReportPatch.reportPlace(host, thai)
                             + (thai ? "" : "."))
@@ -1063,9 +1056,9 @@ public final class FloatingMaps {
                     .show();
             return;
         }
-        // The builder's context carries the dialog theme, so the views match the dialog background.
-        SettingsViews views = new SettingsViews(host, builder.getContext());
-        AlertDialog dialog = builder.setView(views.root).setPositiveButton(thai ? "ปิดหน้าต่าง" : "Close", null).create();
+        // The builder's context and colors (Maps' night or day), so the views match the dialog.
+        SettingsViews views = new SettingsViews(host, builder.getContext(), builder.colors());
+        M3.Dialog dialog = builder.setView(views.root).setPositiveButton(thai ? "ปิดหน้าต่าง" : "Close", null).create();
         views.dialog = dialog;
         views.update();
         dialog.show();
@@ -1077,28 +1070,31 @@ public final class FloatingMaps {
 
     /**
      * The Settings dialog: the on/off switch, "Display over other apps" while it is missing, then the window's choices
-     * (only in D, off Home, size, opacity, place). Every tap applies at once. Colors come from the dialog theme; sizes
-     * are for a head unit at arm's length, as in BYD battery's dialog.
+     * (only in D, off Home, size, opacity, place). Every tap applies at once. Material 3 (M3, PLAN D39) in Maps' night or
+     * day colors; sizes are for a head unit at arm's length, as in BYD battery's dialog. [primary] and [secondary] are
+     * the text colors, [accent] the scheme's primary.
      */
     private static final class SettingsViews {
         final ScrollView root;
-        AlertDialog dialog;
+        M3.Dialog dialog;
         private final Activity host;
         private final Context themed;
+        private final M3.Colors colors;
         private final boolean thai, hasPage, gearAvailable;
         private final int primary, secondary, accent;
         private final LinearLayout content, permission, windowSection;
-        private final Switch toggle, gearToggle, homeToggle;
+        private final M3.Switch toggle, gearToggle, homeToggle;
         private final TextView status, gearStatusText, homeStatusText, resetCaption;
         private final TextView[] sizeChips, opacityChips;
 
-        SettingsViews(Activity host, Context themed) {
+        SettingsViews(Activity host, Context themed, M3.Colors colors) {
             this.host = host;
             this.themed = themed;
+            this.colors = colors;
             thai = UiDensityPatch.isThai(host);
-            primary = themeColor(android.R.attr.textColorPrimary, new TextView(themed).getCurrentTextColor());
-            secondary = themeColor(android.R.attr.textColorSecondary, withAlpha(primary, 0xB3));
-            accent = themeColor(android.R.attr.colorAccent, primary);
+            primary = colors.onSurface;
+            secondary = colors.onSurfaceVariant;
+            accent = colors.primary;
             Intent page = overlayPage(host);
             hasPage = page.resolveActivity(host.getPackageManager()) != null;
             gearAvailable = installed && gearReader() != null;
@@ -1110,7 +1106,7 @@ public final class FloatingMaps {
 
             // On/off. The whole row is the touch target.
             status = text(14, secondary, false);
-            toggle = new Switch(themed);
+            toggle = new M3.Switch(themed, colors);
             LinearLayout switchRow = switchRow(thai ? "แสดงระหว่างนำทาง" : "Show during guidance", 18, status, toggle,
                     () -> setUserOn(host, !userOn(host)));
             switchRow.setMinimumHeight(px(64));
@@ -1155,14 +1151,13 @@ public final class FloatingMaps {
 
             // The window's choices.
             windowSection = vertical();
-            windowSection.setPadding(px(24), px(12), px(24), 0);
-            TextView header = text(14, accent, true);
-            header.setText(thai ? "หน้าต่าง" : "Window");
-            header.setPadding(0, 0, 0, px(4));
+            windowSection.setPadding(px(24), px(20), px(24), 0);
+            TextView header = M3.label(themed, colors, thai ? "หน้าต่าง" : "Window");
+            header.setPadding(0, 0, 0, px(8));
             windowSection.addView(header);
 
             gearStatusText = text(14, secondary, false);
-            gearToggle = new Switch(themed);
+            gearToggle = new M3.Switch(themed, colors);
             if (gearAvailable) {
                 LinearLayout gearRow = switchRow(thai ? "แสดงเฉพาะเกียร์ D" : "Only in D", 16, gearStatusText, gearToggle,
                         () -> setOnlyInDrive(host, !onlyInDrive(host)));
@@ -1172,7 +1167,7 @@ public final class FloatingMaps {
             }
 
             homeStatusText = text(14, secondary, false);
-            homeToggle = new Switch(themed);
+            homeToggle = new M3.Switch(themed, colors);
             LinearLayout homeRow = switchRow(thai ? "ซ่อนบนหน้า Home" : "Hide over Home", 16, homeStatusText, homeToggle,
                     () -> setHideOverHome(host, !hideOverHome(host)));
             homeRow.setMinimumHeight(px(56));
@@ -1228,10 +1223,10 @@ public final class FloatingMaps {
             homeToggle.setChecked(offHome);
             homeStatusText.setText(offHome ? (thai ? "ซ่อนขณะอยู่หน้า Home" : "Hidden while Home is on screen")
                     : (thai ? "แสดงบนหน้า Home ด้วย" : "Shown over Home too"));
-            int size = savedSizeChoice(host);
-            for (int i = 0; i < sizeChips.length; i++) styleChip(sizeChips[i], i == size);
-            int chosen = opacity(host);
-            for (int i = 0; i < opacityChips.length; i++) styleChip(opacityChips[i], OPACITIES[i] == chosen);
+            paintSegments(sizeChips, savedSizeChoice(host));
+            int chosen = opacity(host), chosenIndex = -1;
+            for (int i = 0; i < OPACITIES.length; i++) if (OPACITIES[i] == chosen) chosenIndex = i;
+            paintSegments(opacityChips, chosenIndex);
             // Off: the choices stay visible but cannot be changed.
             windowSection.setAlpha(on ? 1f : 0.4f);
             enable(windowSection, on);
@@ -1250,7 +1245,7 @@ public final class FloatingMaps {
 
         // A switch row: the title and [statusText] on the left, [toggle] on the right. The whole row is the touch
         // target; [flip] stores the new choice, then the dialog shows it.
-        private LinearLayout switchRow(String title, int titleSp, TextView statusText, Switch toggleView, Runnable flip) {
+        private LinearLayout switchRow(String title, int titleSp, TextView statusText, M3.Switch toggleView, Runnable flip) {
             LinearLayout row = horizontal();
             selectable(row);
             LinearLayout texts = vertical();
@@ -1270,11 +1265,11 @@ public final class FloatingMaps {
             return row;
         }
 
-        // A label and a row of chips, one per name; [pick] stores the chosen index, then the dialog shows it.
+        // A label and a segmented button, one segment per name; [pick] stores the chosen index, then the dialog shows it.
         private TextView[] chipRow(String label, String[] names, IntConsumer pick) {
-            TextView title = text(16, primary, false);
+            TextView title = text(14, secondary, false);
             title.setText(label);
-            title.setPadding(0, px(8), 0, 0);
+            title.setPadding(0, px(12), 0, 0);
             windowSection.addView(title);
             LinearLayout row = horizontal();
             TextView[] chips = new TextView[names.length];
@@ -1283,14 +1278,15 @@ public final class FloatingMaps {
                 TextView chip = text(15, primary, false);
                 chip.setGravity(Gravity.CENTER);
                 chip.setMinHeight(px(48));
-                chip.setPadding(px(6), px(4), px(6), px(4));
+                chip.setPadding(px(8), px(4), px(8), px(4));
                 chip.setText(names[i]);
                 chip.setOnClickListener(view -> {
                     pick.accept(choice);
                     update();
                 });
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-                params.setMargins(i == 0 ? 0 : px(4), px(4), i == names.length - 1 ? 0 : px(4), px(4));
+                // The segments share their borders: each after the first overlaps the one before by the stroke.
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1);
+                params.setMargins(i == 0 ? 0 : -Math.max(1, px(1)), px(4), 0, px(4));
                 row.addView(chip, params);
                 chips[i] = chip;
             }
@@ -1298,19 +1294,10 @@ public final class FloatingMaps {
             return chips;
         }
 
-        private void styleChip(TextView chip, boolean selected) {
-            int ripple = withAlpha(primary, 0x29);
-            GradientDrawable shape = new GradientDrawable();
-            shape.setCornerRadius(px(10));
-            shape.setColor(selected ? withAlpha(accent, 0x38) : Color.TRANSPARENT);
-            shape.setStroke(px(selected ? 2 : 1), selected ? accent : withAlpha(secondary, 0x80));
-            // A transparent chip would mask the ripple to its outline, so the mask is solid.
-            GradientDrawable mask = new GradientDrawable();
-            mask.setCornerRadius(px(10));
-            mask.setColor(Color.WHITE);
-            chip.setBackground(new RippleDrawable(ColorStateList.valueOf(ripple), shape, mask));
-            chip.setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            chip.setSelected(selected);
+        private void paintSegments(TextView[] segments, int selected) {
+            for (int i = 0; i < segments.length; i++) {
+                M3.segment(segments[i], colors, i == selected, i == 0, i == segments.length - 1);
+            }
         }
 
         private static void enable(View view, boolean enabled) {
@@ -1322,20 +1309,16 @@ public final class FloatingMaps {
         }
 
         private View divider() {
-            View divider = new View(themed);
-            divider.setBackgroundColor(withAlpha(secondary, 0x40));
+            View divider = M3.divider(themed, colors);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, px(1)));
-            params.setMargins(px(24), px(4), px(24), px(4));
+            params.setMargins(0, px(8), 0, 0);
             divider.setLayoutParams(params);
             return divider;
         }
 
-        private TextView text(int sp, int color, boolean bold) {
-            TextView view = new TextView(themed);
-            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-            view.setTextColor(color);
-            if (bold) view.setTypeface(Typeface.DEFAULT_BOLD);
-            return view;
+        // [medium] is M3's medium weight (the old bold).
+        private TextView text(int sp, int color, boolean medium) {
+            return M3.text(themed, sp, color, medium);
         }
 
         private LinearLayout vertical() {
@@ -1352,30 +1335,11 @@ public final class FloatingMaps {
         }
 
         private void selectable(View view) {
-            TypedValue ripple = new TypedValue();
-            if (themed.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)) {
-                view.setBackgroundResource(ripple.resourceId);
-            }
-        }
-
-        private int themeColor(int attribute, int fallback) {
-            TypedValue value = new TypedValue();
-            if (!themed.getTheme().resolveAttribute(attribute, value, true)) return fallback;
-            if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT && value.type <= TypedValue.TYPE_LAST_COLOR_INT) return value.data;
-            try {
-                if (value.resourceId != 0) return themed.getColorStateList(value.resourceId).getDefaultColor();
-            } catch (RuntimeException error) {
-                ReportLog.w(TAG, "Dialog color " + attribute + " unavailable", error);
-            }
-            return fallback;
+            M3.selectable(view, colors);
         }
 
         private int px(int dp) {
             return Math.round(dp * themed.getResources().getDisplayMetrics().density);
-        }
-
-        private static int withAlpha(int color, int alpha) {
-            return color & 0x00FFFFFF | alpha << 24;
         }
     }
 
