@@ -35,7 +35,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
- * Material 3 for the screens Maps Car adds (PLAN D39, 2026-11-20): Maps' colors at night and by day, a dialog in place of
+ * Material 3 for the screens Maps Car adds: Maps' colors at night and by day, a dialog in place of
  * the framework's AlertDialog (a rounded surface, the title, the body, pill buttons and single-choice rows), and the parts
  * the Settings dialogs use: the M3 switch, filter chips, segmented buttons, cards, section labels and a level bar.
  * Plain views and drawables: no Compose and no Material Components (Maps has both only under renamed classes). The dialog
@@ -142,7 +142,7 @@ public final class M3 {
     static final int FILLED = 0, DANGER = 1, GRAY = 2, OUTLINED = 3;
 
     /**
-     * A button of [kind] (the user, 2026-11-21: buttons, not text; Cancel gray): a pill 48 dp high, medium 16 sp, a press
+     * A button of [kind] (the dialogs' buttons look like buttons, Cancel gray): a pill 48 dp high, medium 16 sp, a press
      * ripple of its text color; disabled, M3's onSurface at 12% (no fill for an outlined one) with the text at 38%.
      */
     static Button button(Context context, Colors colors, CharSequence text, int kind) {

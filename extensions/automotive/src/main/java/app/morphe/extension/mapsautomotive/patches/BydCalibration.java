@@ -78,7 +78,7 @@ final class BydCalibration {
      * Wider bounds once the evidence is large and consistent: at least this many routes and this much traction energy
      * (Wh), and the speed bands (else BYD's trip log) on the same side (above {@link #AGREE_ABOVE} for a factor above
      * {@link #MAX_FACTOR}, below {@link #AGREE_BELOW} for one below {@link #MIN_FACTOR}); with neither, this much
-     * traction energy alone ({@link #WIDE_ALONE_WH}). A car that uses 1.5–2× BYD's table (MC-6GXQ-QEMM, model 128)
+     * traction energy alone ({@link #WIDE_ALONE_WH}). A car that uses 1.5–2× BYD's table (model 128, one owner's report)
      * could never get past 1.25 before.
      */
     static final double WIDE_MIN_FACTOR = 0.6, WIDE_MAX_FACTOR = 2.0, WIDE_MIN_WH = 3000, WIDE_ALONE_WH = 8000;

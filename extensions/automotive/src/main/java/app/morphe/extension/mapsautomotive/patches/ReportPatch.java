@@ -1301,7 +1301,7 @@ public final class ReportPatch {
     }
 
     /**
-     * Views in Material 3 (M3, PLAN D39) and Maps' night or day colors, sized for a head unit at arm's length. [primary]
+     * Views in Material 3 (M3) and Maps' night or day colors, sized for a head unit at arm's length. [primary]
      * and [secondary] are the text colors, [accent] the scheme's primary.
      */
     static final class Views {

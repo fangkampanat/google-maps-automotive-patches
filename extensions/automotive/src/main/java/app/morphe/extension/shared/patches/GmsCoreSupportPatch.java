@@ -138,7 +138,7 @@ public class GmsCoreSupportPatch {
                 "Or tap Do it now. When Android asks \"Allow USB debugging?\", tick \"Always allow\" and tap Allow."
                         + " Maps then runs this command through the car's own ADB.");
         Utils.runOnMainThreadDelayed(() -> {
-            // Maps Car's Material 3 dialog (PLAN D39): Later beside Do it now.
+            // Maps Car's Material 3 dialog: Later beside Do it now.
             Dialog dialog = new M3.Builder(context)
                     .setTitle(text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"))
                     .setMessage(withButton)
@@ -161,7 +161,7 @@ public class GmsCoreSupportPatch {
         // Use a delay to allow the activity to finish initializing.
         // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
         Utils.runOnMainThreadDelayed(() -> {
-            // Maps Car's Material 3 dialog (PLAN D39). The listener gets no dialog and 0, as with the library's dialog.
+            // Maps Car's Material 3 dialog. The listener gets no dialog and 0, as with the library's dialog.
             // Cancelable, so Back skips the action, in case the battery change can never be satisfied.
             Dialog dialog = new M3.Builder(context)
                     .setTitle(title)

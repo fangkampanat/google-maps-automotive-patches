@@ -4,7 +4,7 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 
 [BYD Files](https://tryy.cc/byd), PIN: 344993
 
-![The patched Maps in split screen on a BYD Dolphin: route preview to Nakhon Ratchasima showing "Arrive with 29%", next to MicroG-RE 7.2.2](docs/gmaps-cars-byd.webp)
+![The patched Maps on a BYD Dolphin: route preview to The Mall Korat showing "Arrive with 46%" and "Return with -8%"](docs/gmaps-cars-byd.webp)
 
 ## Features
 
@@ -23,7 +23,7 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 
 - Battery on arrival from the car's own reading (read-only).
 - Choose the battery to arrive with at charging stops, and see the battery health.
-- **Battery on the phone**, on by default: Maps sends the battery percentage to your Google account every 2 minutes while it runs and again when the percentage drops, and this car's energy model (capacity, weight, consumption and charging curves, without the battery level) when it starts and every 2 hours. Google Maps on a phone signed in to the same account can then show this car's battery and the battery on arrival. A switch in the BYD battery dialog turns it off.
+- **Battery on the phone**, on by default: Maps sends the battery percentage to your Google account every 2 minutes while it runs and again when the percentage drops, and this car's energy model (capacity, weight, consumption, charging curves and the outside temperature, without the battery level) when it starts and every 2 hours. Google Maps on a phone signed in to the same account can then show this car's battery and the battery on arrival. A switch in the BYD battery dialog turns it off.
 - On cars with BYD's energy table, Maps plans with that table adjusted for your car from the A/C draw and guided routes.
 - If your car uses much more or less than BYD's table, guided routes can now adjust the model from 0.6 to 2 times the table, once the speed records agree.
 - Above 90% each percent of a BYD battery holds more energy. Maps' battery percentages, now and on arrival, follow the dashboard there, so a trip that starts above 90% no longer shows an arrival a few points low.
@@ -106,7 +106,7 @@ Reports leave out your location, e-mail, VIN and push tokens, and are deleted af
 ## Patches list
 
 <!-- PATCHES_START -->
-[v0.2.0-dev.9](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.2.0-dev.9) · 11 patches
+[v0.2.0](https://github.com/fangkampanat/google-maps-automotive-patches/releases/tag/v0.2.0) · 11 patches
 
 Eligible versions: Any version.
 

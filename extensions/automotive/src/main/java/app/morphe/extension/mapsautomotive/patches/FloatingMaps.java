@@ -922,7 +922,7 @@ public final class FloatingMaps {
         return preference(context, KEY_ON, true);
     }
 
-    /** Only in D; dev.3's "Hide in P and R" choice carries over until this one is set. */
+    /** Only in D; a test build's "Hide in P and R" choice carries over until this one is set. */
     static boolean onlyInDrive(Context context) {
         try {
             SharedPreferences preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
@@ -1070,7 +1070,7 @@ public final class FloatingMaps {
 
     /**
      * The Settings dialog: the on/off switch, "Display over other apps" while it is missing, then the window's choices
-     * (only in D, off Home, size, opacity, place). Every tap applies at once. Material 3 (M3, PLAN D39) in Maps' night or
+     * (only in D, off Home, size, opacity, place). Every tap applies at once. Material 3 (M3) in Maps' night or
      * day colors; sizes are for a head unit at arm's length, as in BYD battery's dialog. [primary] and [secondary] are
      * the text colors, [accent] the scheme's primary.
      */

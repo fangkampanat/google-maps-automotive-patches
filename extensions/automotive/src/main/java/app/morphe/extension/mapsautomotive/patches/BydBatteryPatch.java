@@ -77,7 +77,7 @@ import app.morphe.extension.shared.Utils;
  * while the dialog's Battery on the phone switch is on, the default ({@link PhoneBattery}).
  * <p>
  * On by default with the BYD SDK (DiLink 3) on the tested Dolphin (model id 186), on the reported models and, from
- * 0.2.0-dev.5, on other models where BYD's DiCarServer tables are installed, unless the car's own data was found too far
+ * 0.2.0, on other models where BYD's DiCarServer tables are installed, unless the car's own data was found too far
  * from its table ({@link #checkMismatch}); off on DiLink 5, with an "untested" notice; the Settings row's choice is kept
  * and wins. Active only in the main process of such a car. Otherwise
  * every injection point returns the original value. A new choice applies after the app restarts,
@@ -120,7 +120,7 @@ public final class BydBatteryPatch {
      */
     private static final int[] DEFAULT_ON_MODEL_IDS = {DOLPHIN_MODEL_ID, 128, 138};
     /**
-     * Other models with the BYD SDK and DiCarServer's tables start on as well (from 0.2.0-dev.5), unless their own data
+     * Other models with the BYD SDK and DiCarServer's tables start on as well (from 0.2.0), unless their own data
      * is further from BYD's table than the learning can correct: the speed bands outside these ratios, or BYD's trip log
      * (which reads high in stop-and-go traffic) outside its own. That verdict is kept and turns the default off from the
      * next start, with a notice; the owner's choice still wins.
@@ -181,7 +181,7 @@ public final class BydBatteryPatch {
     // The model Maps receives: BYD's table adjusted with values measured on this car (BydCalibration: the auxiliary power
     // while standing, a traction factor from Maps' own forecasts); BYD's table itself only until the calibration is ready
     // or when the adjusted model fails (no choice; an "energy_model" preference left by a test build is ignored).
-    private static final String MODEL_ADJUSTED = "adjusted", MODEL_TABLE = "table";
+    private static final String MODEL_ADJUSTED = "adjusted", MODEL_TABLE = "table", MODEL_FALLBACK = "fallback";
     private static final String CALIBRATION_FILE = "morphe_byd_calibration.txt";
     /** The calibration is saved at most this often, and at once after a route. */
     private static final long CALIBRATION_SAVE_MS = 60000;
@@ -190,6 +190,11 @@ public final class BydBatteryPatch {
 
     private static volatile boolean active;
     private static volatile byte[] energyModel;
+    // What a published energyModel is ("adjusted;factor=…;aux_w=…", MODEL_TABLE or MODEL_FALLBACK), set with it under
+    // MODEL_LOCK; and what the model Maps last read was ("none" before a read), for Battery on the phone.
+    private static final Object MODEL_LOCK = new Object();
+    private static String energyModelKind = "none";
+    private static volatile String mapsReadKind = "none";
     private static volatile double lastSoc = Double.NaN;
     private static volatile long lastSampleAt, lastMapsReadAt;
     // The last reading, kept for the Settings dialog after it turns stale.
@@ -336,6 +341,16 @@ public final class BydBatteryPatch {
         return energyModel != null ? sampleSoc : Double.NaN;
     }
 
+    /** The outside temperature of the last reading (°C), {@link BydOutsideTemperature#UNAVAILABLE} without one. */
+    static int outsideC() {
+        return sampleOutsideC;
+    }
+
+    /** What the model Maps last read was: "adjusted;factor=…;aux_w=…", "table", "fallback", or "none" before a read. */
+    static String mapsModel() {
+        return mapsReadKind;
+    }
+
     /** Injection point: each read of Maps' demo_ev_connector_types preference. */
     public static String connectorTypes(String original) {
         return active ? CONNECTORS : original;
@@ -443,9 +458,15 @@ public final class BydBatteryPatch {
 
     /** Injection point: the energy model for Maps' listener, or null when there is no fresh reading. */
     public static InputStream openEnergyModel(Uri uri) {
-        byte[] model = energyModel;
+        byte[] model;
+        String kind;
+        synchronized (MODEL_LOCK) {
+            model = energyModel;
+            kind = energyModelKind;
+        }
         if (model == null) return null;
         lastMapsReadAt = SystemClock.elapsedRealtime();
+        mapsReadKind = kind;
         // Battery on the phone: a lower whole percent in Maps' model makes Maps upload it soon (never throws).
         PhoneBattery.modelRead(sampleSoc);
         return new ByteArrayInputStream(model);
@@ -581,7 +602,12 @@ public final class BydBatteryPatch {
             encoded = encodeEnergyModel(current, capacityWh, model);
         }
         boolean resumed = energyModel == null;
-        energyModel = encoded;
+        String kind = file == null ? MODEL_FALLBACK : !adjustedSent ? MODEL_TABLE
+                : String.format(Locale.ROOT, "%s;factor=%.3f;aux_w=%d", MODEL_ADJUSTED, sentFactor, sentAuxW);
+        synchronized (MODEL_LOCK) {
+            energyModelKind = kind;
+            energyModel = encoded;
+        }
         sampleSoc = sample.soc;
         sampleEnergyWh = current;
         sampleCapacityWh = capacityWh;
@@ -887,8 +913,12 @@ public final class BydBatteryPatch {
             if (c == null) {
                 if (!calibrationTried) {
                     calibrationTried = true;
-                    // After this reading, so the first model goes to Maps before the drive records are replayed.
-                    worker.post(() -> startCalibration(file));
+                    BydCalibration loaded = loadCalibration(file);
+                    // A saved one starts now, so this reading's model, the first Maps reads, is the adjusted one: Maps
+                    // uploads the model for phone Maps 5 seconds after it starts, then every 2 hours. One that needs the
+                    // drive records replayed starts after this reading, so the first model goes to Maps before the replay.
+                    if (loaded != null && loaded.seeded()) startCalibration(file, loaded);
+                    else if (loaded != null) worker.post(() -> startCalibration(file, loaded));
                 }
                 return;
             }
@@ -924,20 +954,34 @@ public final class BydBatteryPatch {
         }
     }
 
-    // Worker thread only. Loads the saved calibration, or starts one from the drive records already on the car.
-    private static void startCalibration(BydVehicleEnergyFile file) {
+    // Worker thread only. The saved calibration (a new one when none is saved or it does not load), with the stored trip
+    // log's ratio; null when it cannot be built.
+    private static BydCalibration loadCalibration(BydVehicleEnergyFile file) {
         try {
             BydVehicleEnergyFile.Predictor predictor = file.predictor();
             BydModelParts.Params prior = BydModelParts.Params.table(predictor);
             File stored = new File(context.getFilesDir(), CALIBRATION_FILE);
-            BydCalibration created = BydCalibration.load(stored.isFile() ? readText(stored) : null, prior, predictor.identity());
-            created.setTripLogRatio(restoreTripLog(file));
+            BydCalibration loaded = BydCalibration.load(stored.isFile() ? readText(stored) : null, prior, predictor.identity());
+            loaded.setTripLogRatio(restoreTripLog(file));
+            return loaded;
+        } catch (Throwable error) {
+            ReportLog.w(TAG, "calibration not started: " + BydEnergyReader.describe(error));
+            return null;
+        }
+    }
+
+    // Worker thread only. Uses the loaded calibration, first replaying the drive records already on the car into it when
+    // it has not been seeded.
+    private static void startCalibration(BydVehicleEnergyFile file, BydCalibration created) {
+        try {
             if (!created.seeded()) seedCalibration(created);
             if (calibrationResetPending) {
                 calibrationResetPending = false;
                 created.reset();
             }
             for (String note : created.drainNotes()) ReportLog.i(TAG, note);
+            // As each reading sets it before the calibration observes it, so a model built before the next reading has it too.
+            created.setSpeedRatio(BydSpeedBands.speedRatio());
             calibrationFile = file;
             calibration = created;
             saveCalibration(created);
@@ -1366,13 +1410,13 @@ public final class BydBatteryPatch {
     private static final double HIGH_SHARE = (100 - BydSpeedBands.HIGH_SOC) / 100.0;
 
     /**
-     * The dialog's km per 1%, one value for the whole battery, so it no longer changes when the battery passes 90% (the
-     * user, 2026-11-20; Details keeps the two ranges): each range weighted by its share of the battery, 10% above 90% and
+     * The dialog's km per 1%, one value for the whole battery, so it no longer changes when the battery passes 90% (Details
+     * keeps the two ranges): each range weighted by its share of the battery, 10% above 90% and
      * 90% below, so where the owner drove (a charge to 100%) does not pull it up. A range's value: its whole percents once
      * {@link #MIN_KM_LEVELS}; else its energy per percent (its percents once {@link #MIN_LEVELS}; below 90% else the
      * reading's own average) over the speed bands' measured consumption, or the learned one after {@link #MIN_KM_WINDOWS}
      * windows. Without a value for 90% and below: NaN (learning); without one above 90%: the value below alone. The
-     * learner's starting value alone gave 4.5 where the car did 3.2 (MC-6GXQ-QEMM).
+     * learner's starting value alone gave 4.5 where one car did 3.2.
      */
     static double kmPerPercent(double soc, int energyWh, BydVehicleModel.Status model) {
         BydSpeedBands.LevelStatus[] levels = BydSpeedBands.levelStatus();
@@ -1471,7 +1515,7 @@ public final class BydBatteryPatch {
     }
 
     /**
-     * The dialog's views, in Material 3 (M3, PLAN D39): Maps' night or day colors; sizes are for a head unit at arm's
+     * The dialog's views, in Material 3 (M3): Maps' night or day colors; sizes are for a head unit at arm's
      * length. [primary] and [secondary] are the text colors, [accent] the scheme's primary.
      */
     private static final class BatteryDialog {

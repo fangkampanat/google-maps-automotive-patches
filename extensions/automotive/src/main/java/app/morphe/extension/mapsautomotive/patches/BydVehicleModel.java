@@ -32,7 +32,7 @@ final class BydVehicleModel {
     // Later windows move 20% of the way; the first ones count as a running mean (1, 1/2, 1/3, 1/4).
     private static final double MIN_GAIN = 0.20;
     // A window moves the value at most 5%; 25% when it and the window accepted before it are both more than 15% to the
-    // same side (a car far from its seed: MC-6GXQ-QEMM measured 26 against a 12.3 seed).
+    // same side (a car far from its seed: one measured 26 against a 12.3 seed).
     private static final double STEP = 0.05, CONSISTENT_STEP = 0.25, CONSISTENT_GAP = 0.15;
     // The recent average may cover one short trip; further than this from the total, the total is used.
     private static final double MAX_RECENT_DEVIATION = 0.25;
