@@ -13,3 +13,7 @@
 }
 -dontwarn java.lang.reflect.AnnotatedType
 -dontwarn javax.lang.model.element.Modifier
+# The android.car stand-in (car data for Maps on DiLink): Maps calls these by their real names.
+-keep class android.car.** {
+  *;
+}
