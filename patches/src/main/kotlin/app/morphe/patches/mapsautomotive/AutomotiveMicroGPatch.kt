@@ -89,6 +89,8 @@ internal const val REPORT_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/
 internal const val SAFE_MODE_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/SafeMode;"
 // The "Updates" row: whether a newer release is out (0.1.6).
 private const val UPDATE_CHECK_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/UpdateCheck;"
+// The "MicroG-RE reminders" row: turns the battery whitelist and not-running dialogs at start on or off.
+private const val MICROG_REMINDERS_CLASS = "Lapp/morphe/extension/mapsautomotive/patches/MicroGReminders;"
 // The report screen: its own process, where Maps' start is skipped, and a launcher entry.
 // The names and the process suffix must match ReportActivity and SafeMode in the extension.
 private const val REPORT_ACTIVITY = "app.morphe.extension.mapsautomotive.patches.ReportActivity"
@@ -205,7 +207,7 @@ val automotiveMicroGPatch = bytecodePatch(
     }
 
     finalize {
-        addSettingsRows(IncludedFeatures.settingsRows + REPORT_CLASS + UPDATE_CHECK_CLASS)
+        addSettingsRows(IncludedFeatures.settingsRows + MICROG_REMINDERS_CLASS + REPORT_CLASS + UPDATE_CHECK_CLASS)
         startSafeMode()
         writeIncludedFeatures(IncludedFeatures.features)
     }

@@ -40,7 +40,7 @@ Google Maps Automotive on a BYD DiLink 3 head unit (Android 10) with [MicroG-RE 
 - **Updates**: A daily check for a new release, on by default. It sends only the patches version. Maps from the ready-made APK in BYD Files can install the next release after you confirm.
 - **Report Maps** icon for problem reports, and a safe mode.
 
-Display size, Language, Driver side, Day/night colors, Floating window, BYD battery, Send to car and Updates are in Maps' Settings. All patches except Android 9 (API 28) are on by default; only that set is tested.
+Display size, Language, Driver side, Day/night colors, Floating window, BYD battery, Send to car, MicroG-RE reminders and Updates are in Maps' Settings. All patches except Android 9 (API 28) are on by default; only that set is tested.
 
 ## Tested
 
@@ -82,7 +82,7 @@ Tested on a BYD Dolphin (DiLink 3.0, Android 10) with MicroG-RE 7.3.0.
 ### 3. Maps on the head unit
 
 1. Install the result and start **Maps**. Allow every permission Android asks for.
-2. When Maps shows "MicroG-RE needs a setting", tap **Do it now**, tick "Always allow" on Android's prompt and tap **Allow**. Without it, MicroG-RE stops sending your location to Maps on DiLink 3.
+2. When Maps shows "MicroG-RE needs a setting", tap **Do it now**, tick "Always allow" on Android's prompt and tap **Allow**. Without it, MicroG-RE stops sending your location to Maps on DiLink 3. If the car's ADB can't be reached (no wireless ADB switch, e.g. DiLink 5) and Maps works for you without it, tap **Don't show again**; **MicroG-RE reminders** in Maps' Settings turns the reminder back on.
 3. For Send to car, turn OFF **Maps** in BYD's **Disable Autostart**. BYD turns it back on after each install or update.
 
 ## Reporting problems
