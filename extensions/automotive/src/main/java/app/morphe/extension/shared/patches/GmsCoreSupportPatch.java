@@ -121,7 +121,19 @@ public class GmsCoreSupportPatch {
                                                       String positiveButtonText,
                                                       DialogInterface.OnClickListener onPositiveClickListener) {
         showDialog(context, text(context, "ต้องตั้งค่า MicroG-RE", "MicroG-RE needs a setting"), dialogMessage,
-                positiveButtonText, onPositiveClickListener, null);
+                positiveButtonText, onPositiveClickListener, null, true);
+    }
+
+    // "Don't show again" on the MicroG-RE reminders (battery whitelist, not running): turns off the existing
+    // GMS_CORE_BATTERY_OPTIMIZATION_DIALOG setting, which Settings > MicroG-RE reminders turns on again. On by default,
+    // so nothing changes for owners who don't tap it. For head units where the whitelist command can't be run.
+    private static String dontShowAgainText(Context context) {
+        return text(context, "ไม่ต้องแสดงอีก", "Don't show again");
+    }
+
+    private static void dontShowAgain() {
+        SharedSettings.GMS_CORE_BATTERY_OPTIMIZATION_DIALOG.save(false);
+        Logger.printInfo(() -> "MicroG-RE reminders turned off from the dialog");
     }
 
     // The BYD battery dialog. With the car's own ADB answering: "Do it now" runs the command there (CarAdb), "Later"
@@ -145,6 +157,7 @@ public class GmsCoreSupportPatch {
                     .setPositiveButton(text(context, "ทำให้เลย", "Do it now"),
                             (shown, which) -> CarAdb.whitelist(context, GMS_CORE_PACKAGE_NAME, WHITELIST_COMMAND))
                     .setNegativeButton(text(context, "ไว้ทีหลัง", "Later"), null)
+                    .setNeutralButton(dontShowAgainText(context), (shown, which) -> dontShowAgain())
                     .setCancelable(true)
                     .create();
             Utils.showDialog(context, dialog, true, null);
@@ -152,23 +165,26 @@ public class GmsCoreSupportPatch {
     }
 
     // [onShown]: run when the dialog is on screen (possibly again after the app comes back), or null.
+    // [offerDontShow]: a "Don't show again" button too (the MicroG-RE reminders).
     private static void showDialog(Activity context,
                                    String title,
                                    String dialogMessage,
                                    String positiveButtonText,
                                    DialogInterface.OnClickListener onPositiveClickListener,
-                                   @Nullable Runnable onShown) {
+                                   @Nullable Runnable onShown,
+                                   boolean offerDontShow) {
         // Use a delay to allow the activity to finish initializing.
         // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
         Utils.runOnMainThreadDelayed(() -> {
             // Maps Car's Material 3 dialog. The listener gets no dialog and 0, as with the library's dialog.
             // Cancelable, so Back skips the action, in case the battery change can never be satisfied.
-            Dialog dialog = new M3.Builder(context)
+            M3.Builder builder = new M3.Builder(context)
                     .setTitle(title)
                     .setMessage(dialogMessage)
                     .setPositiveButton(positiveButtonText, (shown, which) -> onPositiveClickListener.onClick(null, 0))
-                    .setCancelable(true)
-                    .create();
+                    .setCancelable(true);
+            if (offerDontShow) builder.setNegativeButton(dontShowAgainText(context), (shown, which) -> dontShowAgain());
+            Dialog dialog = builder.create();
 
             // Show the dialog
             Utils.showDialog(context, dialog, true, onShown == null ? null : shown -> onShown.run());
@@ -341,7 +357,7 @@ public class GmsCoreSupportPatch {
             // Marked as warned once the dialog is on screen: a start that ends before it shows warns again next time.
             showDialog(context, text(context, "MicroG ไม่ใช่ MicroG-RE", "This MicroG is not MicroG-RE"), message,
                     text(context, "ตกลง", "OK"), (dialog, id) -> { },
-                    () -> checks.edit().putString(PROVIDER_WARNED, build).apply());
+                    () -> checks.edit().putString(PROVIDER_WARNED, build).apply(), false);
             return true;
         } catch (Exception ex) {
             Logger.printException(() -> "provider check failure", ex);
