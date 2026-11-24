@@ -7,6 +7,9 @@ import android.app.Application;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.PictureInPictureParams;
+import android.os.Build;
+import android.util.Rational;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -36,6 +39,7 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -86,7 +90,8 @@ public final class FloatingMaps {
     static final String CARD_ACTIVITY = "com.google.android.apps.gmm.car.embedded.activity.LimitedMapsActivity";
     private static final String PREFERENCES = "morphe_floating_maps", KEY_ON = "on", KEY_RIGHT = "right", KEY_BOTTOM = "bottom",
             KEY_WIDTH = "width", KEY_HEIGHT = "height", KEY_OPACITY = "opacity", KEY_ONLY_D = "only_in_d",
-            KEY_HIDE_P_R = "hide_in_p_r", KEY_NOT_OVER_HOME = "hide_over_home";
+            KEY_HIDE_P_R = "hide_in_p_r", KEY_NOT_OVER_HOME = "hide_over_home", KEY_PIP = "picture_in_picture",
+            KEY_PIP_RATIO = "pip_ratio";
     /** The window's sizes in px: small, medium (the default), large. */
     static final int[][] SIZES = {{480, 400}, {640, 540}, {800, 680}};
     static final int DEFAULT_WIDTH = 640, DEFAULT_HEIGHT = 540, MARGIN = 24, MIN_WIDTH = 320, MIN_HEIGHT = 180;
@@ -135,6 +140,27 @@ public final class FloatingMaps {
     private static final Runnable watcher = FloatingMaps::watch;
     private static final Runnable coverCheck = FloatingMaps::watch;
 
+    // Picture-in-picture, an option for systems where the card cannot start (Android 11+ refuses an app's activity on
+    // its own untrusted virtual display, e.g. DiLink 5): during guidance MapsActivity (which declares
+    // supportsPictureInPicture) has the system's auto-enter turned on, so leaving Maps for Home or another app shrinks
+    // Maps itself into the PiP window. No card is started then. Off by default: the card stays the floating window.
+    static final int[][] PIP_RATIOS = {{3, 4}, {9, 16}, {1, 2}};
+    private static volatile boolean usePip, cardRefused;
+    private static final String MAPS_ACTIVITY = "com.google.android.maps.MapsActivity";
+    private static final Set<Activity> pipOn = Collections.newSetFromMap(new WeakHashMap<>());
+    private static final Set<Activity> pipOff = Collections.newSetFromMap(new WeakHashMap<>());
+    private static boolean lastInPip;
+    private static volatile boolean pipSupported, pipAuto;
+    private static volatile int pipEntered, pipSets;
+    private static volatile String pipError;
+    // In PiP only the map and a small direction strip show; the strip's text size follows the Size chips.
+    private static final float[] PIP_TEXT = {0.85f, 1f, 1.25f};
+    private static final String PIP_STRIP_TAG = "morphe_pip_directions";
+    private static final Set<Activity> pipWatched = Collections.newSetFromMap(new WeakHashMap<>());
+    private static final java.util.Map<View, Integer> pipHidden = new WeakHashMap<>();
+    private static volatile int pipHides;
+    private static volatile String pipMap, pipStrip;
+
     private FloatingMaps() {
     }
 
@@ -146,6 +172,11 @@ public final class FloatingMaps {
             application = activity.getApplication();
             main = new Handler(Looper.getMainLooper());
             application.registerActivityLifecycleCallbacks(new Lifecycle());
+            pipSupported = Build.VERSION.SDK_INT >= 31
+                    && activity.getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+            usePip = pipSupported && preference(activity, KEY_PIP, false);
+            ReportLog.i(TAG, "picture-in-picture " + (pipSupported ? "supported" : "not supported by this system")
+                    + (usePip ? ", chosen instead of the card" : ""));
             ReportLog.i(TAG, "Floating Maps window " + (userOn(activity) ? "on" : "off in Settings")
                     + ", display over other apps " + (Settings.canDrawOverlays(activity) ? "allowed" : "not allowed"));
         } catch (Throwable error) {
@@ -206,8 +237,14 @@ public final class FloatingMaps {
         public void onActivityResumed(Activity activity) {
             // Back from a page that only paused Maps (the system's permission page can): a look at once.
             if (!isOurCard(activity) && inFront.contains(activity)) watch();
+            // Back from PiP to full screen: the PiP view is undone (also re-checked shortly after).
+            if (usePip || !pipHidden.isEmpty()) schedulePipView(activity);
         }
-        @Override public void onActivityPaused(Activity activity) { }
+        @Override
+        public void onActivityPaused(Activity activity) {
+            // Entering PiP pauses Maps.
+            if (usePip) schedulePipView(activity);
+        }
         @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
     }
 
@@ -253,10 +290,12 @@ public final class FloatingMaps {
         try {
             if (!userOn(application)) {
                 tearDown("turned off");
+                if (!pipOn.isEmpty()) updatePip(false);
                 return;
             }
             boolean front = !inFront.isEmpty();
-            if (!Settings.canDrawOverlays(application)) {
+            // PiP needs no "Display over other apps": only the card's window does.
+            if (!usePip && !Settings.canDrawOverlays(application)) {
                 tearDown("not allowed");
                 // Looked at again while a Maps screen is in front: the owner may be back from the system's page.
                 if (front) main.postDelayed(watcher, WATCH_MS);
@@ -301,8 +340,10 @@ public final class FloatingMaps {
             // The gear at every look in guidance (Maps in front too), so D's start is known before Maps is covered.
             boolean gearKnown = guiding && gearWatched();
             if (gearKnown) readGear(now);
+            // PiP on leaving Maps: in guidance, and in D when the owner chose "Only in D" (never over the rear camera).
+            if (usePip) updatePip(guiding && (!gearKnown || gearAllows(lastGear, driveSince, now)));
             boolean watchCover = false;
-            if (guiding) {
+            if (guiding && !usePip) {
                 if (front) {
                     if (card() == null && !cardRequested) startCard();
                 } else {
@@ -543,6 +584,258 @@ public final class FloatingMaps {
         return null;
     }
 
+    // Auto-enter PiP on (in guidance) or off for each MapsActivity on screen; it stays set while Maps is covered. Also
+    // notes when Maps goes into or out of the PiP window.
+    private static void updatePip(boolean want) {
+        boolean inPip = false;
+        for (Activity activity : inFront) {
+            if (activity.isFinishing() || activity.isDestroyed() || !MAPS_ACTIVITY.equals(activity.getClass().getName())) continue;
+            if (activity.isInPictureInPictureMode()) inPip = true;
+            watchPipLayout(activity);
+            applyPipView(activity);
+            if ((want ? pipOn : pipOff).contains(activity)) continue;
+            try {
+                int[] ratio = PIP_RATIOS[pipRatioChoice(activity)];
+                PictureInPictureParams.Builder params = new PictureInPictureParams.Builder()
+                        .setAspectRatio(new Rational(ratio[0], ratio[1]));
+                if (Build.VERSION.SDK_INT >= 31) params.setAutoEnterEnabled(want).setSeamlessResizeEnabled(true);
+                activity.setPictureInPictureParams(params.build());
+                pipSets++;
+                pipAuto = want;
+                ReportLog.i(TAG, "picture-in-picture on leaving Maps: " + (want ? "on, " + ratio[0] + ":" + ratio[1] : "off"));
+            } catch (Throwable error) {
+                pipError = String.valueOf(error);
+                note("picture-in-picture not set", error);
+            }
+            (want ? pipOn : pipOff).add(activity);
+            (want ? pipOff : pipOn).remove(activity);
+        }
+        if (inPip != lastInPip) {
+            lastInPip = inPip;
+            if (inPip) pipEntered++;
+            ReportLog.i(TAG, "picture-in-picture " + (inPip ? "entered" : "left"));
+            ReportBuilder.saveSnapshot(application, true);
+        }
+    }
+
+    /** The direction strip's text size in PiP, from the Size chips (Small, Medium, Large). */
+    static float pipTextScale(Context context) {
+        int choice = savedSizeChoice(context);
+        return choice >= 0 && choice < PIP_TEXT.length ? PIP_TEXT[choice] : PIP_TEXT[1];
+    }
+
+    // The window's size changes on entering and leaving PiP: the PiP view is set (or undone) right after.
+    private static void watchPipLayout(Activity activity) {
+        if (pipWatched.contains(activity)) return;
+        pipWatched.add(activity);
+        try {
+            View decor = activity.getWindow().getDecorView();
+            WeakReference<Activity> owner = new WeakReference<>(activity);
+            decor.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                if (right - left == oldRight - oldLeft && bottom - top == oldBottom - oldTop) return;
+                Activity current = owner.get();
+                if (current != null) schedulePipView(current);
+            });
+        } catch (Throwable error) {
+            note("PiP layout not watched", error);
+        }
+    }
+
+    // The PiP mode flag can change after the window's new size is laid out (and the other way round), so the view is
+    // checked now and again shortly after any change.
+    private static void schedulePipView(Activity activity) {
+        if (main == null || !MAPS_ACTIVITY.equals(activity.getClass().getName())) return;
+        WeakReference<Activity> owner = new WeakReference<>(activity);
+        Runnable check = () -> {
+            Activity current = owner.get();
+            if (current != null && !current.isDestroyed()) applyPipView(current);
+        };
+        main.post(check);
+        main.postDelayed(check, 300);
+        main.postDelayed(check, 1000);
+    }
+
+    // In PiP only Maps' map view stays: every view beside it, on the way up to the content view, is made invisible (the
+    // buttons, cards and banners), and a small direction strip from Maps' guidance notification goes on top. Nothing is
+    // resized. Out of PiP the hidden views come back and the strip goes.
+    private static void applyPipView(Activity activity) {
+        try {
+            View decorView = activity.getWindow().getDecorView();
+            if (!(decorView instanceof FrameLayout)) return;
+            FrameLayout decor = (FrameLayout) decorView;
+            ViewGroup content = decor.findViewById(android.R.id.content);
+            if (content == null) return;
+            if (!activity.isInPictureInPictureMode()) {
+                restorePipView(decor);
+                return;
+            }
+            View map = largestMapView(content);
+            if (map == null) {
+                pipMap = "none";
+            } else {
+                pipMap = map.getClass().getName() + " " + map.getWidth() + "x" + map.getHeight();
+                View child = map;
+                for (ViewParent parent = map.getParent(); parent instanceof ViewGroup; parent = parent.getParent()) {
+                    ViewGroup group = (ViewGroup) parent;
+                    for (int i = 0; i < group.getChildCount(); i++) {
+                        View sibling = group.getChildAt(i);
+                        if (sibling == child || sibling.getVisibility() != View.VISIBLE) continue;
+                        pipHidden.put(sibling, View.VISIBLE);
+                        sibling.setVisibility(View.INVISIBLE);
+                        pipHides++;
+                    }
+                    if (group == content) break;
+                    child = group;
+                }
+            }
+            showPipStrip(activity, decor);
+        } catch (Throwable error) {
+            pipError = String.valueOf(error);
+            note("PiP view not set", error);
+        }
+    }
+
+    // The biggest visible TextureView or SurfaceView: Maps' map (a GL texture view).
+    private static View largestMapView(View view) {
+        if (view.getVisibility() != View.VISIBLE) return null;
+        View best = (view instanceof android.view.TextureView || view instanceof SurfaceView) ? view : null;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = largestMapView(group.getChildAt(i));
+                if (found != null && (best == null
+                        || (long) found.getWidth() * found.getHeight() > (long) best.getWidth() * best.getHeight())) {
+                    best = found;
+                }
+            }
+        }
+        return best;
+    }
+
+    private static void restorePipView(FrameLayout decor) {
+        View strip = decor.findViewWithTag(PIP_STRIP_TAG);
+        if (strip != null) decor.removeView(strip);
+        if (pipHidden.isEmpty()) return;
+        for (java.util.Map.Entry<View, Integer> hidden : pipHidden.entrySet()) {
+            View view = hidden.getKey();
+            // Maps may have hidden it itself meanwhile (GONE): left as Maps set it.
+            if (view != null && view.getVisibility() == View.INVISIBLE) view.setVisibility(hidden.getValue());
+        }
+        pipHidden.clear();
+        ReportLog.i(TAG, "PiP view undone");
+    }
+
+    // The direction strip: turn icon, title and text of Maps' guidance notification, refreshed at every look.
+    private static void showPipStrip(Activity activity, FrameLayout decor) {
+        View existing = decor.findViewWithTag(PIP_STRIP_TAG);
+        Notification guidance = guidanceNotification();
+        if (guidance == null) {
+            if (existing != null) existing.setVisibility(View.GONE);
+            pipStrip = "no guidance";
+            return;
+        }
+        // The strip follows the PiP window's width (Android makes it about 270 dp wide on a 1080p car screen, less at
+        // higher densities) and the Size chips.
+        android.util.DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
+        float density = metrics.density;
+        int windowDp = activity.getResources().getConfiguration().screenWidthDp;
+        float text = pipTextScale(activity) * Math.max(0.75f, Math.min(1.25f, windowDp > 0 ? windowDp / 270f : 1f));
+        LinearLayout strip;
+        if (existing instanceof LinearLayout) {
+            strip = (LinearLayout) existing;
+        } else {
+            strip = new LinearLayout(activity);
+            strip.setTag(PIP_STRIP_TAG);
+            strip.setOrientation(LinearLayout.HORIZONTAL);
+            strip.setGravity(Gravity.CENTER_VERTICAL);
+            android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
+            box.setColor(0xF0127D61);
+            box.setCornerRadius(12 * density);
+            strip.setBackground(box);
+            strip.setElevation(4 * density);
+            android.widget.ImageView icon = new android.widget.ImageView(activity);
+            icon.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+            strip.addView(icon, new LinearLayout.LayoutParams(0, 0));
+            LinearLayout lines = new LinearLayout(activity);
+            lines.setOrientation(LinearLayout.VERTICAL);
+            lines.addView(stripLine(activity, Color.WHITE, true));
+            lines.addView(stripLine(activity, 0xE6FFFFFF, false));
+            strip.addView(lines, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
+            int margin = Math.round(6 * density);
+            params.setMargins(margin, margin, margin, margin);
+            decor.addView(strip, params);
+        }
+        int pad = Math.round(8 * density * text), iconSize = Math.round(32 * density * text);
+        strip.setPadding(pad, pad, pad, pad);
+        LinearLayout.LayoutParams iconParams = (LinearLayout.LayoutParams) strip.getChildAt(0).getLayoutParams();
+        iconParams.width = iconSize;
+        iconParams.height = iconSize;
+        iconParams.rightMargin = pad;
+        strip.getChildAt(0).setLayoutParams(iconParams);
+        strip.setVisibility(View.VISIBLE);
+        android.os.Bundle extras = guidance.extras != null ? guidance.extras : new android.os.Bundle();
+        CharSequence head = extras.getCharSequence(Notification.EXTRA_TITLE);
+        CharSequence body = extras.getCharSequence(Notification.EXTRA_TEXT);
+        CharSequence big = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
+        if (!blank(big) && (blank(body) || big.length() > body.length())) body = big;
+        if (blank(head)) {
+            head = body;
+            body = null;
+        }
+        android.graphics.drawable.Drawable picture = null;
+        android.graphics.drawable.Icon large = guidance.getLargeIcon();
+        if (large != null) picture = large.loadDrawable(activity);
+        if (picture == null && guidance.getSmallIcon() != null) {
+            picture = guidance.getSmallIcon().loadDrawable(activity);
+            if (picture != null) {
+                picture = picture.mutate();
+                picture.setTint(Color.WHITE);
+            }
+        }
+        android.widget.ImageView icon = (android.widget.ImageView) strip.getChildAt(0);
+        icon.setImageDrawable(picture);
+        icon.setVisibility(picture != null ? View.VISIBLE : View.GONE);
+        LinearLayout lines = (LinearLayout) strip.getChildAt(1);
+        // Room for the text: the window less the strip's margins, padding and icon.
+        int room = decor.getWidth() - Math.round(12 * density) - 2 * pad - (picture != null ? iconSize + pad : 0);
+        setStripLine((TextView) lines.getChildAt(0), blank(head) ? "Navigating" : head, 16 * text, room, metrics);
+        setStripLine((TextView) lines.getChildAt(1), body, 12 * text, room, metrics);
+        pipStrip = (blank(head) ? "" : "title ") + (blank(body) ? "" : "text ") + (large != null ? "large_icon" : "small_icon");
+    }
+
+    private static TextView stripLine(Context context, int color, boolean bold) {
+        TextView view = new TextView(context);
+        view.setTextColor(color);
+        if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        view.setMaxLines(1);
+        view.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        return view;
+    }
+
+    private static boolean blank(CharSequence text) {
+        return text == null || text.toString().trim().isEmpty();
+    }
+
+    // One line at the given size, made up to a quarter smaller when it doesn't fit; cut with "…" only past that.
+    private static void setStripLine(TextView view, CharSequence text, float sp, int room,
+            android.util.DisplayMetrics metrics) {
+        view.setVisibility(blank(text) ? View.GONE : View.VISIBLE);
+        if (blank(text)) return;
+        view.setText(text);
+        float size = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, sp, metrics);
+        float smallest = size * 0.75f;
+        android.text.TextPaint paint = new android.text.TextPaint(view.getPaint());
+        String line = text.toString();
+        while (room > 0 && size > smallest) {
+            paint.setTextSize(size);
+            if (paint.measureText(line) <= room) break;
+            size = Math.max(smallest, size - metrics.density / 2);
+        }
+        view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, size);
+    }
+
     private static void startCard() {
         if (SystemClock.uptimeMillis() < retryAt) return;
         Activity maps = focusedMaps();
@@ -571,6 +864,7 @@ public final class FloatingMaps {
             startFailures++;
             droppedStarts++;
             retryAt = SystemClock.uptimeMillis() + retryDelay(startFailures);
+            if (error instanceof SecurityException) cardRefused = true;
             note("card not started (" + startFailures + ")", error);
         }
     }
@@ -936,6 +1230,16 @@ public final class FloatingMaps {
         return preference(context, KEY_NOT_OVER_HOME, false);
     }
 
+    /** The PiP window's shape: an index into PIP_RATIOS (3:4 by default). */
+    static int pipRatioChoice(Context context) {
+        try {
+            int choice = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getInt(KEY_PIP_RATIO, 0);
+            return choice >= 0 && choice < PIP_RATIOS.length ? choice : 0;
+        } catch (RuntimeException error) {
+            return 0;
+        }
+    }
+
     private static boolean preference(Context context, String key, boolean fallback) {
         try {
             return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean(key, fallback);
@@ -980,6 +1284,32 @@ public final class FloatingMaps {
     private static void setOnlyInDrive(Activity host, boolean only) {
         host.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean(KEY_ONLY_D, only).apply();
         ReportLog.i(TAG, "only in D " + (only ? "on" : "off") + " in Settings");
+    }
+
+    // Card or PiP. The other one is stopped at once; the chosen one starts at the next look.
+    private static void setUsePip(Activity host, boolean pip) {
+        host.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean(KEY_PIP, pip).apply();
+        ReportLog.i(TAG, "picture-in-picture " + (pip ? "chosen instead of the card" : "off, the card again") + " in Settings");
+        if (!installed) return;
+        if (pip) {
+            tearDown("picture-in-picture chosen");
+            usePip = pipSupported;
+        } else {
+            if (!pipOn.isEmpty()) updatePip(false);
+            usePip = false;
+        }
+        pipOn.clear();
+        pipOff.clear();
+        watch();
+    }
+
+    private static void setPipRatio(Activity host, int choice) {
+        host.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putInt(KEY_PIP_RATIO, choice).apply();
+        ReportLog.i(TAG, "PiP shape " + PIP_RATIOS[choice][0] + ":" + PIP_RATIOS[choice][1] + " in Settings");
+        // Set again with the new shape at the next look (a PiP window on screen changes at once).
+        pipOn.clear();
+        pipOff.clear();
+        if (installed) watch();
     }
 
     private static void setHideOverHome(Activity host, boolean hide) {
@@ -1028,6 +1358,7 @@ public final class FloatingMaps {
             return (thai ? "ปิดชั่วคราว (เปิดคืนใน " : "Off for now (back on in ") + ReportPatch.reportPlace(context, thai) + ")";
         }
         if (!userOn(context)) return thai ? "ปิด" : "Off";
+        if (usePip) return thai ? "เปิด · ภาพซ้อนภาพ" : "On · picture-in-picture";
         if (!Settings.canDrawOverlays(context)) {
             return thai ? "เปิด · ยังไม่ได้อนุญาต" : "On · not allowed yet";
         }
@@ -1082,10 +1413,12 @@ public final class FloatingMaps {
         private final M3.Colors colors;
         private final boolean thai, hasPage, gearAvailable;
         private final int primary, secondary, accent;
-        private final LinearLayout content, permission, windowSection;
-        private final M3.Switch toggle, gearToggle, homeToggle;
-        private final TextView status, gearStatusText, homeStatusText, resetCaption;
-        private final TextView[] sizeChips, opacityChips;
+        private final LinearLayout content, permission, windowSection, homeRow;
+        private final M3.Switch toggle, gearToggle, homeToggle, pipToggle;
+        private final TextView status, intro, gearStatusText, homeStatusText, pipStatusText, resetCaption, reset, handling,
+                sizeTitle;
+        private final TextView[] sizeChips, opacityChips, ratioChips;
+        private final View[] cardOnly, pipOnly;
 
         SettingsViews(Activity host, Context themed, M3.Colors colors) {
             this.host = host;
@@ -1113,13 +1446,9 @@ public final class FloatingMaps {
             switchRow.setPadding(px(24), px(8), px(16), px(8));
             content.addView(switchRow);
 
-            TextView intro = text(15, secondary, false);
+            intro = text(15, secondary, false);
             intro.setLineSpacing(0, 1.2f);
             intro.setPadding(px(24), px(4), px(24), px(8));
-            intro.setText(thai
-                    ? "เมื่อกล้อง แอปอื่น หรือหน้า Home บัง Maps หน้าต่างเล็กจะแสดงจุดเลี้ยวถัดไป แผนที่ และเวลาถึง"
-                    : "When the camera, another app or Home covers Maps, a small window shows the next turn, the map and"
-                    + " the arrival time.");
             content.addView(intro);
 
             // "Display over other apps", only while it is missing.
@@ -1156,6 +1485,20 @@ public final class FloatingMaps {
             header.setPadding(0, 0, 0, px(8));
             windowSection.addView(header);
 
+            // Card or picture-in-picture.
+            pipStatusText = text(14, secondary, false);
+            pipToggle = new M3.Switch(themed, colors);
+            LinearLayout pipRow = switchRow(thai ? "ใช้ภาพซ้อนภาพ (PiP)" : "Use picture-in-picture", 16, pipStatusText, pipToggle,
+                    () -> setUsePip(host, !preference(host, KEY_PIP, false)));
+            pipRow.setMinimumHeight(px(56));
+            pipRow.setPadding(0, px(4), 0, px(4));
+            windowSection.addView(pipRow);
+            String[] ratioNames = new String[PIP_RATIOS.length];
+            for (int i = 0; i < PIP_RATIOS.length; i++) ratioNames[i] = PIP_RATIOS[i][0] + ":" + PIP_RATIOS[i][1];
+            ratioChips = chipRow(thai ? "สัดส่วนหน้าต่าง PiP" : "PiP window shape", ratioNames, choice -> setPipRatio(host, choice));
+            View ratioTitle = windowSection.getChildAt(windowSection.getChildCount() - 2);
+            View ratioRow = windowSection.getChildAt(windowSection.getChildCount() - 1);
+
             gearStatusText = text(14, secondary, false);
             gearToggle = new M3.Switch(themed, colors);
             if (gearAvailable) {
@@ -1168,7 +1511,7 @@ public final class FloatingMaps {
 
             homeStatusText = text(14, secondary, false);
             homeToggle = new M3.Switch(themed, colors);
-            LinearLayout homeRow = switchRow(thai ? "ซ่อนบนหน้า Home" : "Hide over Home", 16, homeStatusText, homeToggle,
+            homeRow = switchRow(thai ? "ซ่อนบนหน้า Home" : "Hide over Home", 16, homeStatusText, homeToggle,
                     () -> setHideOverHome(host, !hideOverHome(host)));
             homeRow.setMinimumHeight(px(56));
             homeRow.setPadding(0, px(4), 0, px(4));
@@ -1176,11 +1519,14 @@ public final class FloatingMaps {
 
             String[] sizeNames = thai ? new String[]{"เล็ก", "กลาง", "ใหญ่"} : new String[]{"Small", "Medium", "Large"};
             sizeChips = chipRow(thai ? "ขนาด" : "Size", sizeNames, choice -> setSize(host, choice));
+            sizeTitle = (TextView) windowSection.getChildAt(windowSection.getChildCount() - 2);
             String[] opacityNames = new String[OPACITIES.length];
             for (int i = 0; i < OPACITIES.length; i++) opacityNames[i] = OPACITIES[i] + "%";
             opacityChips = chipRow(thai ? "ความทึบ" : "Opacity", opacityNames, choice -> setOpacity(host, OPACITIES[choice]));
+            View opacityTitle = windowSection.getChildAt(windowSection.getChildCount() - 2);
+            View opacityRow = windowSection.getChildAt(windowSection.getChildCount() - 1);
 
-            TextView reset = text(16, accent, true);
+            reset = text(16, accent, true);
             reset.setText(thai ? "ตำแหน่งเริ่มต้น" : "Reset place");
             reset.setMinHeight(px(48));
             reset.setGravity(Gravity.CENTER_VERTICAL);
@@ -1197,24 +1543,48 @@ public final class FloatingMaps {
             windowSection.addView(reset);
             windowSection.addView(resetCaption);
 
-            TextView handling = text(14, secondary, false);
+            handling = text(14, secondary, false);
             handling.setLineSpacing(0, 1.2f);
             handling.setPadding(0, px(8), 0, 0);
-            handling.setText(thai
-                    ? "แตะหน้าต่างเพื่อเปิด Maps ลากเพื่อย้าย ลากมุมซ้ายบนเพื่อปรับขนาด และกด X เพื่อซ่อนจนกว่าจะกลับมาที่ Maps"
-                    : "Tap the window to open Maps. Drag it to move it, drag its top-left corner to resize it, and tap X"
-                    + " to hide it until you are back in Maps.");
             windowSection.addView(handling);
             content.addView(windowSection);
+            // What only the card's window uses, and what only PiP uses.
+            cardOnly = new View[]{homeRow, opacityTitle, opacityRow, reset, resetCaption};
+            pipOnly = new View[]{ratioTitle, ratioRow};
         }
 
         void update() {
-            boolean on = userOn(host), allowed = Settings.canDrawOverlays(host);
+            boolean on = userOn(host), pip = pipSupported && preference(host, KEY_PIP, false);
+            boolean allowed = pip || Settings.canDrawOverlays(host);
             toggle.setChecked(on);
             status.setText(!on ? (thai ? "ปิด" : "Off")
                     : allowed ? (thai ? "เปิด · ขึ้นเมื่อหน้าจออื่นบัง Maps" : "On · shows when another screen covers Maps")
                     : (thai ? "เปิด · ยังไม่ได้อนุญาตให้แสดงทับแอปอื่น" : "On · not allowed to display over other apps yet"));
             permission.setVisibility(on && !allowed ? View.VISIBLE : View.GONE);
+            intro.setText(pip
+                    ? (thai ? "เมื่อออกจาก Maps ระหว่างนำทาง Maps จะย่อเป็นหน้าต่างภาพซ้อนภาพของ Android แสดงแผนที่และเลี้ยวถัดไป"
+                            : "When you leave Maps during guidance, Maps shrinks into Android's picture-in-picture window"
+                            + " with the map and the next turn.")
+                    : (thai ? "เมื่อกล้อง แอปอื่น หรือหน้า Home บัง Maps หน้าต่างเล็กจะแสดงจุดเลี้ยวถัดไป แผนที่ และเวลาถึง"
+                            : "When the camera, another app or Home covers Maps, a small window shows the next turn, the map"
+                            + " and the arrival time."));
+            pipToggle.setChecked(pip);
+            pipStatusText.setText(!pipSupported
+                    ? (thai ? "ระบบนี้ไม่รองรับ (ต้องใช้ Android 12 ขึ้นไป)" : "Not available on this system (needs Android 12+)")
+                    : pip ? (thai ? "แทนหน้าต่างลอย" : "Instead of the floating window")
+                    : cardRefused ? (thai ? "แนะนำ: ระบบนี้ไม่ยอมเปิดหน้าต่างลอย" : "Recommended: this system refuses the floating window")
+                    : (thai ? "ถ้าหน้าต่างลอยไม่ขึ้นในรถของคุณ" : "If the floating window doesn't show in your car"));
+            for (View view : cardOnly) view.setVisibility(pip ? View.GONE : View.VISIBLE);
+            for (View view : pipOnly) view.setVisibility(pip ? View.VISIBLE : View.GONE);
+            sizeTitle.setText(thai ? (pip ? "ขนาดคำแนะนำใน PiP" : "ขนาด") : (pip ? "Directions size in PiP" : "Size"));
+            handling.setText(pip
+                    ? (thai ? "แตะหน้าต่าง PiP เพื่อดูปุ่ม แล้วกดปุ่มตรงกลางเพื่อกลับไปเต็มจอ ลากเพื่อย้าย"
+                            : "Tap the PiP window for its buttons, then the middle one to go back to full screen. Drag it"
+                            + " to move it.")
+                    : (thai ? "แตะหน้าต่างเพื่อเปิด Maps ลากเพื่อย้าย ลากมุมซ้ายบนเพื่อปรับขนาด และกด X เพื่อซ่อนจนกว่าจะกลับมาที่ Maps"
+                            : "Tap the window to open Maps. Drag it to move it, drag its top-left corner to resize it, and"
+                            + " tap X to hide it until you are back in Maps."));
+            paintSegments(ratioChips, pipRatioChoice(host));
             boolean only = onlyInDrive(host);
             gearToggle.setChecked(only);
             gearStatusText.setText(only ? (thai ? "ซ่อนตอน P, R และ N · กลับมาเมื่ออยู่ D ครบ 30 วินาที"
@@ -1230,6 +1600,7 @@ public final class FloatingMaps {
             // Off: the choices stay visible but cannot be changed.
             windowSection.setAlpha(on ? 1f : 0.4f);
             enable(windowSection, on);
+            if (!pipSupported) enable((View) pipToggle.getParent(), false);
         }
 
         private void openPage(Intent page) {
@@ -1378,6 +1749,18 @@ public final class FloatingMaps {
                 .put("gear", reportGear != null ? reportGear : JSONObject.NULL)
                 .put("gear_reader", gearStatus != null ? gearStatus : JSONObject.NULL)
                 .put("place", spot != null ? spot.toString() : JSONObject.NULL)
-                .put("last_error", error != null ? error : JSONObject.NULL);
+                .put("last_error", error != null ? error : JSONObject.NULL)
+                .put("pip_supported", pipSupported)
+                .put("pip_chosen", usePip)
+                .put("pip_ratio", PIP_RATIOS[pipRatioChoice(context)][0] + ":" + PIP_RATIOS[pipRatioChoice(context)][1])
+                .put("card_refused", cardRefused)
+                .put("pip_auto", pipAuto)
+                .put("pip_sets", pipSets)
+                .put("pip_entered", pipEntered)
+                .put("pip_error", pipError != null ? pipError : JSONObject.NULL)
+                .put("pip_text_scale", pipTextScale(context))
+                .put("pip_map", pipMap != null ? pipMap : JSONObject.NULL)
+                .put("pip_hides", pipHides)
+                .put("pip_strip", pipStrip != null ? pipStrip : JSONObject.NULL);
     }
 }
